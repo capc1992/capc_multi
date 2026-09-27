@@ -4,6 +4,10 @@
 *.pyc
 *.swp
 .DS_Store
+.env
+.env.*
+!.env.example
+!.env.template
 .atom/
 .build/
 .buildlog/
@@ -37,9 +41,41 @@ migrate_working_dir/
 /dist/
 /tmp/
 /migration/
+*.sqlite
 *.sqlite3
+*.db
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-journal
 *.sqlite3-wal
 *.sqlite3-shm
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Backups and exported copies of local business data
+backup/
+backups/
+respaldo/
+respaldos/
+*.bak
+*.backup
+*.bkp
+
+# Signing material and local secret configuration
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+key.properties
+secrets/
+credentials/
+*.secret
+*.secrets
+*.credentials
 
 # Symbolication related
 app.*.symbols
