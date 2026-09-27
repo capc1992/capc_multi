@@ -1,6 +1,6 @@
 # Android offline de CAPC MULTISERVICIO
 
-Esta rama adapta la versión Windows `0.3.0+6` para ejecutar la misma lógica local en Android. No implementa sincronización, acceso al VPS, Firebase ni publicación en Google Play.
+Esta rama adapta la versión Windows `0.3.0+6` para ejecutar la misma lógica local en Android. La base de sincronización es opcional y no está desplegada: sin configuración remota Android continúa completamente local. No se accedió al VPS, no se añadió Firebase ni se publicó en Google Play.
 
 ## Arquitectura
 
@@ -50,7 +50,7 @@ La operación es completamente local. Una venta, su pago, el movimiento de exist
 
 ## Estado offline
 
-La interfaz muestra **Guardado en este dispositivo**. No muestra un estado de sincronización porque todavía no existe servidor conectado. La outbox permanece local y preparada para una etapa posterior; no se transmite ningún evento.
+Sin URL remota la interfaz muestra **Guardado en este dispositivo**, el motor queda en `local_only` y no transmite eventos. El esquema 3 conserva outbox, inbox y cursor para una conexión futura. “Sincronizado” solo será válido después de un ciclo push/pull confirmado.
 
 ## Respaldos y Excel
 
@@ -75,6 +75,6 @@ La compilación de comprobación `flutter build apk --debug --no-pub` fue aproba
 
 - probar apertura, persistencia, selector, restauración, compartir e impresión en un dispositivo Android real;
 - definir el identificador definitivo de aplicación, firma, iconos y política de privacidad;
-- diseñar autenticación remota, API, conflictos, asignación de existencias/cobranza offline y procesamiento de outbox;
+- completar autenticación remota, almacenamiento seguro de tokens, materializadores y piloto PostgreSQL/VPS;
 - probar sincronización entre equipos antes de mostrar “Sincronizado”;
 - preparar pruebas cerradas y publicación en Play Console solo con autorización posterior.

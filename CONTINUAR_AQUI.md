@@ -1,10 +1,10 @@
 ﻿# Continuidad de CAPC MULTISERVICIO
 
-Actualizado el 26 de septiembre de 2026. Proyecto canónico: `C:\Users\CAPC\capc_multi`.
+Actualizado el 27 de septiembre de 2026. Proyecto canónico: `C:\Users\CAPC\capc_multi`.
 
 ## Alcance y autorización vigentes
 
-Solicitud más reciente: descargar plantilla Excel e importar productos y servicios en lote; exportar datos de catálogo y otras secciones; crear un cliente desde Nueva venta conservando lo escrito. Se comprobó que los comprobantes con PDF e impresión ya estaban implementados y se conservaron.
+Solicitud más reciente: crear el fundamento offline-first entre Windows y Android mediante una API central futura, sin acceder al VPS ni eliminar SQLite local. La rama de trabajo es `feature/cloud-sync-foundation`, creada desde `origin/feature/android-offline` en `6d59bf2ee830f7a48727ed03aa915b1408b89e15`.
 
 La solicitud previa de apertura mostró una ventana negra. El proceso abierto en esta conversación (PID 26148, versión 0.2.3) sigue sin ventana visible y mantiene el mutex de instancia única. No afirmar que las funciones nuevas resolvieron ese fallo nativo ni volver a lanzar otra instancia mientras esté presente. Reiniciar Windows permite liberar esa instancia; falta verificar la ventana real de la nueva versión después.
 
@@ -16,7 +16,7 @@ No instalar Microsoft Build Tools: la autorización anterior fue retirada. El eq
 
 ## Código disponible
 
-- Versión del proyecto: `0.3.0+6`; esquema SQLite 2 con migración conservadora de v1.
+- Versión del proyecto: `0.3.0+6`; esquema SQLite 3 con migraciones conservadoras v1→v2→v3.
 - Usuarios locales propietario/administrador/cajero, contraseñas Argon2id, permisos en repositorio y revocación de sesión.
 - Recuperación offline con código aleatorio de 256 bits, hash SHA-256, uso único, rotación y límite de intentos. «Olvidé mi contraseña» en ingreso y «Seguridad de mi cuenta» para generar/guardar código tras verificar contraseña actual. Alta/reconfiguración propietaria muestran el código al terminar.
 - Materiales, servicios y recetas, inventario con movimientos, costo promedio y sugerencia de precio optativa.
@@ -47,6 +47,15 @@ Verificación de esta rama:
 - `flutter build windows --release --no-pub`: correcto; se generó `build/windows/x64/runner/Release/capc_multi.exe`. No se creó un paquete `dist` nuevo.
 - `flutter build apk --debug --no-pub`: correcto con NDK `28.2.13676358`; se generó `build/app/outputs/flutter-apk/app-debug.apk` (169.822.809 bytes, SHA-256 `04BBA0BC079E2A7A2C1BB9130EBFA031F676ABF2AB79B52D7267C3C2AE0B9F0D`). La compilación no equivale a una prueba física en un teléfono.
 - No se abrió, copió ni modificó la base real del negocio. Todas las pruebas y respaldos de prueba usaron `:memory:` o directorios temporales.
+
+## Fundamento de sincronización (`feature/cloud-sync-foundation`)
+
+- SQLite continúa siendo la fuente local y todas las operaciones funcionan sin URL ni internet. El esquema 3 migra conservadoramente desde 2 y añade revisiones, inbox, cursor, intentos, confirmaciones, errores y conflictos; la outbox anterior se copia completa.
+- `lib/sync/` define el sobre versionado, transporte HTTP configurable por `CAPC_SYNC_URL`, estados `local_only/pending/syncing/synced/error` y motor push/pull. El token es un proveedor en memoria para un futuro adaptador seguro; no se escribe en SQLite.
+- Producto, cliente, venta, pago y movimiento de inventario ya se materializan idempotentemente entre dos SQLite temporales. Los hechos financieros se insertan; no se sobrescriben por “último cambio gana”. El stock viaja como movimientos y un saldo negativo crea conflicto sin borrar la venta.
+- `server/` contiene Fastify/TypeScript, contrato validado, OpenAPI, almacén PostgreSQL transaccional, aislamiento por `business_id`, cursor monotónico y pruebas HTTP con almacén en memoria. No se accedió ni desplegó al VPS.
+- Protocolo y seguridad: `docs/SYNC_SPEC.md`. Etapas pendientes: `docs/SYNC_ROADMAP.md`. Operación local del servidor: `server/README.md`.
+- Comprobación final: formato estable; análisis Flutter limpio; **165 pruebas Flutter aprobadas** (las 160 anteriores y 5 nuevas); 2 pruebas Python aprobadas; typecheck, build TypeScript y **6 pruebas del servidor** aprobadas; auditoría npm de producción con 0 vulnerabilidades; APK debug y Windows release compilados. Este equipo no tiene Docker ni `psql`, por lo que la migración y las transacciones aún deben verificarse contra PostgreSQL real antes de cualquier piloto.
 
 ## Excel y alta de cliente desde venta (0.3.0)
 

@@ -1,16 +1,24 @@
-﻿# Contrato local CAPC MULTISERVICIO - esquema 2
+﻿# Contrato local CAPC MULTISERVICIO - esquema 3
 
-Este contrato sustituye el alcance antiguo sin autenticación. La interfaz y las operaciones locales comparten reglas entre Windows y la adaptación Android offline, en español, COP enteros y cantidades enteras. Una empresa/caja local activa; sin servidor ni sincronización. Windows `0.3.0` continúa como base estable. La carpeta canónica es `C:\Users\CAPC\capc_multi`.
+Este contrato sustituye el alcance antiguo sin autenticación. La interfaz y las operaciones locales comparten reglas entre Windows y Android offline, en español, COP enteros y cantidades enteras. SQLite continúa como fuente local y Windows `0.3.0` como base estable. El intercambio remoto es opcional y permanece desactivado sin configuración. La carpeta canónica es `C:\Users\CAPC\capc_multi`.
 
 ## Arquitectura y compatibilidad
 
 `lib/data/models.dart` exporta los modelos comunes y `operations_models.dart`. `CapcRepository` es la frontera transaccional y de autorización. `operations.dart` comparte su biblioteca y reutiliza ejecutores de transacción para compras, cotizaciones y trabajos: no anida transacciones públicas.
 
-SQLite conserva claves foráneas, WAL, synchronous FULL, identificadores UUID, eventos locales e historial. Migración v1 a v2 conserva productos, clientes, líneas históricas, ventas, pagos, movimientos, numeración y operaciones idempotentes. Las nuevas tablas identifican negocio y dispositivo; las consultas se limitan al negocio local. La aplicación Windows permite una sola instancia por sesión para evitar restauraciones concurrentes; el mutex y el código nativo de ventana no se ejecutan en Android.
+SQLite conserva claves foráneas, WAL, synchronous FULL, identificadores UUID, eventos locales e historial. Las migraciones v1→v2→v3 conservan productos, clientes, líneas históricas, ventas, pagos, movimientos, numeración, operaciones idempotentes y outbox. El esquema 3 añade revisiones, inbox, cursor, intentos, confirmaciones, estados y conflictos. Las tablas identifican negocio y dispositivo; las consultas se limitan al negocio local. La aplicación Windows permite una sola instancia por sesión para evitar restauraciones concurrentes; el mutex y el código nativo de ventana no se ejecutan en Android.
 
 `AppPlatformServices` separa ubicación privada, driver local, selector/exportación, impresión/compartir e información del dispositivo. Windows y Android reutilizan `CapcRepository` y el mismo SQLite incluido; no existen repositorios de negocio duplicados por plataforma.
 
 No se destruyen ni recrean datos del negocio durante actualización. Una versión posterior desconocida se rechaza. La base vacía exige alta de propietario; una base v1 migrada también exige crear su propietario antes de operar.
+
+## Sincronización opcional
+
+La outbox se escribe en la misma transacción que la mutación local. `lib/sync/` reclama eventos, registra intentos, confirma por `operation_id`, recibe cambios posteriores a un cursor monotónico y los conserva en inbox antes de materializarlos. Sin `CAPC_SYNC_URL` no realiza tráfico y el estado es `local_only`.
+
+El servidor versionado recibe `business_id`, `device_id`, `operation_id`, tipo, versión, UTC y contenido validado. PostgreSQL aísla toda consulta por negocio y confirma registro, proyección y acuse dentro de una transacción. Ventas, pagos y demás hechos financieros son inmutables; inventario sincroniza movimientos, nunca cantidades absolutas. Revisiones obsoletas y existencias globales negativas generan conflictos durables.
+
+No se sincronizan usuarios locales, contraseñas, hashes, códigos de recuperación, sesiones ni secretos. El Bearer de desarrollo no se persiste en SQLite; la autenticación por dispositivo y el almacenamiento seguro del sistema son requisitos previos al despliegue. El protocolo completo está en `docs/SYNC_SPEC.md`.
 
 ## Identidad y permisos
 
@@ -20,7 +28,7 @@ Permisos verificados en el repositorio, con comprobación de vigencia de sesión
 
 Recuperación offline: `generateRecoveryCode` exige sesión vigente y contraseña actual; genera 32 bytes aleatorios y conserva solo SHA-256 en settings por usuario. Cada generación sustituye la anterior. `resetPasswordWithRecoveryCode` requiere usuario activo y código válido, cambia la contraseña en una transacción, consume el código, limpia el bloqueo de ingreso e invalida las sesiones. No inicia sesión automáticamente. La recuperación tiene su propio límite de intentos y no revela si el usuario o el código existen. Códigos y contraseñas no aparecen en auditoría.
 
-El mantenimiento autorizado puede preparar `owner_reconfiguration_user_id` únicamente fuera de la app, con acceso al archivo y respaldo validado antes de escribir. Mientras existe, ingreso y operaciones autenticadas quedan bloqueados. `completeOwnerReconfiguration` permite elegir nombre, usuario y contraseña nuevos para ese propietario activo, mantiene su ID y todas las operaciones, registra el cambio y consume el marcador en una transacción. No existe un botón de restablecimiento sin credencial en la app normal. El esquema continúa en versión 2; la recuperación utiliza settings.
+El mantenimiento autorizado puede preparar `owner_reconfiguration_user_id` únicamente fuera de la app, con acceso al archivo y respaldo validado antes de escribir. Mientras existe, ingreso y operaciones autenticadas quedan bloqueados. `completeOwnerReconfiguration` permite elegir nombre, usuario y contraseña nuevos para ese propietario activo, mantiene su ID y todas las operaciones, registra el cambio y consume el marcador en una transacción. No existe un botón de restablecimiento sin credencial en la app normal. La recuperación utiliza settings locales que no se sincronizan.
 
 ## Inventario, costo y venta
 
@@ -62,4 +70,4 @@ Trabajos Recibido/En proceso/Listo/Entregado con responsable y fecha prevista. A
 
 Respaldo consistente SQLite y validación antes de ofrecerlo. Restauración trabaja sobre copia temporal, valida integridad/esquema/referencias y conserva copia previa antes de reemplazar bajo acceso exclusivo. `recoverDatabase` permite restaurar desde fallo de inicio verificando credenciales propietarias del respaldo. No mezclar -wal/-shm de bases distintas.
 
-No hay cifrado integral de SQLite, sincronización remota, multiempresa activa, Android publicado ni facturación electrónica. El historial de auditoría no sustituye la protección del usuario y de los archivos del sistema. La compilación Android de comprobación sigue pendiente del NDK requerido; consulta `docs/ANDROID.md`.
+No hay cifrado integral de SQLite, sincronización desplegada, multiempresa activa en la interfaz, Android publicado ni facturación electrónica. El historial de auditoría no sustituye la protección del usuario y de los archivos del sistema. Las compilaciones de comprobación Android y Windows no sustituyen un piloto físico; consulta `docs/ANDROID.md` y `docs/SYNC_ROADMAP.md`.

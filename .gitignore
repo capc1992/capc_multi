@@ -36,6 +36,8 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+node_modules/
+/server/dist/
 .qa-python/
 /output/
 /dist/

@@ -1,10 +1,10 @@
 ﻿# CAPC MULTISERVICIO
 
-Aplicación Flutter en español con operación local SQLite. Windows `0.3.0` es la base estable; la rama Android comparte la misma lógica y prepara funcionamiento offline sin servidor. Esta carpeta es el proyecto canónico; la plantilla anterior está archivada en `migration/flutter-template`.
+Aplicación Flutter en español con operación local SQLite. Windows `0.3.0` es la base estable y Android comparte la misma lógica. El fundamento de sincronización es opcional: sin URL cada dispositivo funciona completamente offline. Esta carpeta es el proyecto canónico; la plantilla anterior está archivada en `migration/flutter-template`.
 
 Consulta [CONTINUAR_AQUI.md](CONTINUAR_AQUI.md) para resultados de verificación, [CONTRACT.md](CONTRACT.md) para reglas técnicas y [el plan](docs/plan-desarrollo-capc.md) para alcance y límites.
 
-La arquitectura y el estado comprobado de la adaptación móvil están en [Android offline](docs/ANDROID.md).
+La arquitectura móvil está en [Android offline](docs/ANDROID.md). El protocolo remoto y sus etapas están en [SYNC_SPEC](docs/SYNC_SPEC.md) y [SYNC_ROADMAP](docs/SYNC_ROADMAP.md); el servicio futuro se documenta en [server/README.md](server/README.md).
 
 ## Abrir
 
@@ -85,6 +85,10 @@ flutter analyze --no-pub
 flutter test --no-pub
 flutter build windows --release
 powershell -ExecutionPolicy Bypass -File tools/package-windows.ps1
+cd server
+npm run check
+npm test
+npm run build
 ```
 
 Para revisión visual, definir `CAPC_UI_QA_DIR=output/qa/ui` y `CAPC_PDF_QA_DIR=output/qa/pdf` antes de las pruebas. `tools/verify_pdfs.py` renderiza todas las páginas y verifica texto, dimensiones y paginación. Sus dependencias se instalan dentro del proyecto con `python -m pip install --target .qa-python pypdfium2 pillow pypdf`.
@@ -93,7 +97,7 @@ El empaquetado comprueba la versión, las dependencias y que no haya código Dar
 
 ## Límites
 
-Una empresa y caja local activas. Negocio/dispositivo y eventos locales preparan una evolución futura: no existe sincronización Android/VPS ni se accedió al servidor. No se usa Chrome como sustituto.
+Una empresa y caja local activas en la interfaz. Existe el fundamento de sincronización, pero no está desplegado, no tiene aún identidad remota definitiva y no se accedió al VPS. No se usa Chrome como sustituto.
 
 Se detectó Visual Studio Community 2026 Insiders y se activó el modo de desarrollador Windows. No se instaló Microsoft Build Tools; su instalación separada continúa pendiente.
 

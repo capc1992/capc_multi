@@ -10,13 +10,15 @@ import 'package:sqlite3/sqlite3.dart' as native;
 import 'package:uuid/uuid.dart';
 
 import '../platform/platform_services.dart';
+import '../sync/sync_models.dart';
 import 'models.dart';
 export 'models.dart';
 part 'operations.dart';
 part 'recovery.dart';
+part '../sync/local_sync_store.dart';
 
-/// All writes are transactional and authorised against the current database.
-/// The outbox is local only: this class does not connect to any server.
+/// All interactive writes stay transactional and local. Remote exchange is
+/// delegated to the optional sync engine and never blocks offline operation.
 class CapcRepository {
   CapcRepository._(
     this._db,
@@ -28,7 +30,7 @@ class CapcRepository {
   static const _maxMoney = 999999999999;
   static const _maxQuantity = 1000000000;
   static const _maxMicros = 9000000000000000000;
-  static const _schemaVersion = 2;
+  static const _schemaVersion = 3;
   static const _applicationId = 1128353859;
   static final _passwordAlgorithm = Argon2id(
     memory: 19456,
@@ -119,10 +121,18 @@ class CapcRepository {
         },
         onCreate: (db, _) async => _createSchema(db),
         onUpgrade: (db, oldVersion, newVersion) async {
-          if (oldVersion != 1 || newVersion != 2) {
+          var current = oldVersion;
+          if (current == 1) {
+            await _migrateV1(db);
+            current = 2;
+          }
+          if (current == 2) {
+            await _migrateV2ToV3(db);
+            current = 3;
+          }
+          if (current != newVersion) {
             throw const CapcException('Versión de datos no compatible.');
           }
-          await _migrateV1(db);
         },
         onDowngrade: (db, oldVersion, newVersion) async {
           throw const CapcException(
@@ -607,6 +617,9 @@ class CapcRepository {
       );
     }
     final now = _now();
+    final revision = current.isEmpty
+        ? 1
+        : (current.single['revision'] as int) + 1;
     final record = <String, Object?>{
       'code': code,
       'name': name,
@@ -617,6 +630,7 @@ class CapcRepository {
       'sale_price': product.salePrice,
       'minimum_stock': product.minimumStock,
       'updated_at': now,
+      'revision': revision,
     };
     if (current.isEmpty) {
       await txn.insert('products', {
@@ -781,6 +795,11 @@ class CapcRepository {
           'delta': delta,
           'costMicros': movement.costMicros,
           'reason': explanation,
+          'movement': (await txn.query(
+            'stock_movements',
+            where: 'id = ?',
+            whereArgs: [movement.id],
+          )).single,
         },
         _now(),
         operationId: opId,
@@ -931,19 +950,21 @@ class CapcRepository {
 
   Future<void> saveCustomer(Customer customer) => _run(() async {
     final id = customer.id.trim().isEmpty ? _uuid.v4() : _id(customer.id);
-    final record = <String, Object?>{
-      'name': _text(customer.name, 'El nombre del cliente', 160),
-      'phone': _optionalText(customer.phone, 'El teléfono', 80),
-      'updated_at': _now(),
-    };
     await _db.transaction((txn) async {
       await _require(Permission.manageCustomers, txn);
       final current = await txn.query(
         'customers',
-        columns: ['id'],
         where: 'id = ? AND business_id = ?',
         whereArgs: [id, businessId],
       );
+      final record = <String, Object?>{
+        'name': _text(customer.name, 'El nombre del cliente', 160),
+        'phone': _optionalText(customer.phone, 'El teléfono', 80),
+        'updated_at': _now(),
+        'revision': current.isEmpty
+            ? 1
+            : (current.single['revision'] as int) + 1,
+      };
       if (current.isEmpty) {
         await txn.insert('customers', {
           'id': id,
@@ -1374,6 +1395,38 @@ class CapcRepository {
     }
     await _recordOperation(txn, opId, 'sale.create', request, saleId, now);
     final sale = await _getSale(txn, saleId);
+    final saleRecord = (await txn.query(
+      'sales',
+      where: 'id = ?',
+      whereArgs: [saleId],
+    )).single;
+    final lineRecords = await txn.query(
+      'sale_lines',
+      where: 'sale_id = ?',
+      whereArgs: [saleId],
+      orderBy: 'position',
+    );
+    final lineIds = lineRecords.map((line) => line['id'] as String).toList();
+    final consumptionRecords = <Map<String, Object?>>[];
+    for (final lineId in lineIds) {
+      consumptionRecords.addAll(
+        await txn.query(
+          'sale_consumptions',
+          where: 'sale_line_id = ?',
+          whereArgs: [lineId],
+        ),
+      );
+    }
+    final paymentRecords = await txn.query(
+      'payments',
+      where: 'sale_id = ? AND created_at = ?',
+      whereArgs: [saleId, now],
+    );
+    final movementRecords = await txn.query(
+      'stock_movements',
+      where: 'reference_id = ?',
+      whereArgs: [saleId],
+    );
     await _enqueue(
       txn,
       'sale.created',
@@ -1386,6 +1439,11 @@ class CapcRepository {
         'prepaid': prepaid,
         'paymentId': paymentId,
         'lines': sale.lines.map(_lineRecord).toList(),
+        'sale': saleRecord,
+        'saleLines': lineRecords,
+        'consumptions': consumptionRecords,
+        'payments': paymentRecords,
+        'stockMovements': movementRecords,
       },
       now,
       operationId: opId,
@@ -1462,6 +1520,11 @@ class CapcRepository {
           'amount': amount,
           'method': paymentMethod,
           'createdAt': now,
+          'payment': (await txn.query(
+            'payments',
+            where: 'id = ?',
+            whereArgs: [paymentId],
+          )).single,
         },
         now,
         operationId: opId,
@@ -2380,7 +2443,7 @@ class CapcRepository {
         'operations',
         'outbox',
         'counters',
-        if (version == 2) ...{
+        if (version >= 2) ...{
           'settings',
           'users',
           'service_materials',
@@ -2400,6 +2463,7 @@ class CapcRepository {
           'work_orders',
           'work_advances',
         },
+        if (version >= 3) ...{'inbox', 'sync_state', 'sync_conflicts'},
       };
       if (!tables.containsAll(required)) {
         throw const CapcException('Al respaldo le faltan tablas necesarias.');
@@ -2424,7 +2488,7 @@ class CapcRepository {
       }
       final incoherent = db.select('''SELECT s.id FROM sales s WHERE s.paid !=
         COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.sale_id=s.id),0)
-        ${version == 2 ? '+ s.prepaid' : ''} LIMIT 1''');
+        ${version >= 2 ? '+ s.prepaid' : ''} LIMIT 1''');
       if (incoherent.isNotEmpty) {
         throw const CapcException(
           'Los saldos del respaldo no coinciden con su historial de pagos.',
@@ -3225,16 +3289,23 @@ class CapcRepository {
     String? business,
     String? device,
   }) async {
+    final businessValue = business ?? _uuid.v4();
+    final deviceValue = device ?? _uuid.v4();
     for (final statement in _schema) {
       await db.execute(statement);
     }
     await db.insert('settings', {
       'key': 'business_id',
-      'value': business ?? _uuid.v4(),
+      'value': businessValue,
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
     await db.insert('settings', {
       'key': 'device_id',
-      'value': device ?? _uuid.v4(),
+      'value': deviceValue,
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    await db.insert('sync_state', {
+      'business_id': businessValue,
+      'cursor': 0,
+      'status': 'local_only',
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
     for (final name in ['sale', 'return']) {
       await db.insert('counters', {
@@ -3416,6 +3487,87 @@ class CapcRepository {
     }
   }
 
+  static Future<void> _migrateV2ToV3(DatabaseExecutor db) async {
+    final productColumns = await db.rawQuery('PRAGMA table_info(products)');
+    if (!productColumns.any((row) => row['name'] == 'revision')) {
+      await db.execute(
+        'ALTER TABLE products ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0)',
+      );
+    }
+    final customerColumns = await db.rawQuery('PRAGMA table_info(customers)');
+    if (!customerColumns.any((row) => row['name'] == 'revision')) {
+      await db.execute(
+        'ALTER TABLE customers ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0)',
+      );
+    }
+    final quoteColumns = await db.rawQuery('PRAGMA table_info(quotes)');
+    if (!quoteColumns.any((row) => row['name'] == 'revision')) {
+      await db.execute(
+        'ALTER TABLE quotes ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0)',
+      );
+    }
+    final outboxColumns = await db.rawQuery('PRAGMA table_info(outbox)');
+    if (!outboxColumns.any((row) => row['name'] == 'retry_count')) {
+      await db.execute('ALTER TABLE outbox RENAME TO outbox_v2');
+      await db.execute(_outboxSchema);
+      await db.execute('''INSERT INTO outbox
+        (id,business_id,device_id,operation_id,kind,schema_version,payload,created_at,state)
+        SELECT id,business_id,device_id,operation_id,kind,schema_version,payload,created_at,'pending'
+        FROM outbox_v2''');
+      await db.execute('DROP TABLE outbox_v2');
+    }
+    for (final statement in _syncSchema) {
+      await db.execute(statement);
+    }
+    final settings = await db.query(
+      'settings',
+      where: 'key = ?',
+      whereArgs: ['business_id'],
+    );
+    if (settings.isNotEmpty) {
+      final count = await db.rawQuery(
+        "SELECT COUNT(*) AS amount FROM outbox WHERE state != 'acknowledged'",
+      );
+      final pending = count.single['amount'] as int;
+      await db.insert('sync_state', {
+        'business_id': settings.single['value'],
+        'cursor': 0,
+        'status': pending == 0 ? 'local_only' : 'pending',
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+
+  static const _outboxSchema = '''CREATE TABLE IF NOT EXISTS outbox (
+      id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
+      operation_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, schema_version INTEGER NOT NULL,
+      payload TEXT NOT NULL, created_at TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','sending','acknowledged','error')),
+      retry_count INTEGER NOT NULL DEFAULT 0 CHECK(retry_count>=0), last_attempt_at TEXT,
+      acknowledged_at TEXT, server_cursor INTEGER, last_error TEXT)''';
+
+  static const _syncSchema = <String>[
+    '''CREATE TABLE IF NOT EXISTS inbox (
+      id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
+      operation_id TEXT NOT NULL, server_cursor INTEGER NOT NULL, kind TEXT NOT NULL,
+      schema_version INTEGER NOT NULL, payload TEXT NOT NULL, occurred_at TEXT NOT NULL,
+      received_at TEXT NOT NULL, applied_at TEXT, state TEXT NOT NULL DEFAULT 'received'
+      CHECK(state IN ('received','applied','conflict','error')), last_error TEXT,
+      UNIQUE(business_id,operation_id), UNIQUE(business_id,server_cursor))''',
+    '''CREATE TABLE IF NOT EXISTS sync_state (
+      business_id TEXT PRIMARY KEY NOT NULL, cursor INTEGER NOT NULL DEFAULT 0 CHECK(cursor>=0),
+      status TEXT NOT NULL DEFAULT 'local_only'
+      CHECK(status IN ('local_only','pending','syncing','synced','error')),
+      last_attempt_at TEXT, last_success_at TEXT, last_error TEXT)''',
+    '''CREATE TABLE IF NOT EXISTS sync_conflicts (
+      id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+      kind TEXT NOT NULL, entity_id TEXT NOT NULL, details TEXT NOT NULL,
+      created_at TEXT NOT NULL, resolved_at TEXT,
+      UNIQUE(business_id,operation_id,kind,entity_id))''',
+    'CREATE INDEX IF NOT EXISTS outbox_pending ON outbox(business_id,state,created_at)',
+    'CREATE INDEX IF NOT EXISTS inbox_pending ON inbox(business_id,state,server_cursor)',
+    'CREATE INDEX IF NOT EXISTS sync_conflicts_open ON sync_conflicts(business_id,resolved_at,created_at)',
+  ];
+
   static const _schema = <String>[
     'CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)',
     '''CREATE TABLE IF NOT EXISTS users (
@@ -3433,13 +3585,15 @@ class CapcRepository {
       stock INTEGER NOT NULL CHECK(stock>=0), minimum_stock INTEGER NOT NULL CHECK(minimum_stock>=0),
       inventory_value_micros INTEGER NOT NULL DEFAULT 0 CHECK(inventory_value_micros>=0),
       cost_known INTEGER NOT NULL DEFAULT 1 CHECK(cost_known IN (0,1)), cost_basis TEXT NOT NULL DEFAULT 'weighted',
-      updated_at TEXT NOT NULL, UNIQUE(business_id,code), CHECK(is_service=0 OR (stock=0 AND minimum_stock=0)))''',
+      updated_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0),
+      UNIQUE(business_id,code), CHECK(is_service=0 OR (stock=0 AND minimum_stock=0)))''',
     '''CREATE TABLE IF NOT EXISTS service_materials (
       service_id TEXT NOT NULL REFERENCES products(id), product_id TEXT NOT NULL REFERENCES products(id),
       quantity INTEGER NOT NULL CHECK(quantity>0), business_id TEXT NOT NULL, PRIMARY KEY(service_id,product_id))''',
     '''CREATE TABLE IF NOT EXISTS customers (
       id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
-      name TEXT NOT NULL, phone TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL)''',
+      name TEXT NOT NULL, phone TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0))''',
     '''CREATE TABLE IF NOT EXISTS sales (
       id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
       number TEXT NOT NULL, sequence INTEGER NOT NULL, created_at TEXT NOT NULL,
@@ -3509,10 +3663,7 @@ class CapcRepository {
     '''CREATE TABLE IF NOT EXISTS operations (
       id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
       kind TEXT NOT NULL, request TEXT NOT NULL, entity_id TEXT NOT NULL, created_at TEXT NOT NULL, actor_id TEXT)''',
-    '''CREATE TABLE IF NOT EXISTS outbox (
-      id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
-      operation_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, schema_version INTEGER NOT NULL,
-      payload TEXT NOT NULL, created_at TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending' CHECK(state='pending'))''',
+    _outboxSchema,
     '''CREATE TABLE IF NOT EXISTS audit (
       id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
       action TEXT NOT NULL, entity_id TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL,
@@ -3527,5 +3678,6 @@ class CapcRepository {
     'CREATE INDEX IF NOT EXISTS returns_created ON sale_returns(business_id,created_at)',
     'CREATE INDEX IF NOT EXISTS cash_movements_session ON cash_movements(session_id,method)',
     'CREATE UNIQUE INDEX IF NOT EXISTS cash_one_open ON cash_sessions(business_id) WHERE closed_at IS NULL',
+    ..._syncSchema,
   ];
 }
