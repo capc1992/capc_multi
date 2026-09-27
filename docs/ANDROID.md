@@ -69,11 +69,11 @@ Android no accede directamente a la impresora USB conectada al computador Window
 
 Las pruebas automatizadas usan bases temporales o `:memory:`. Incluyen una ejecución con el adaptador Android para persistencia, venta offline, idempotencia, stock, deuda, abonos, outbox, respaldo y navegación móvil. Las suites existentes conservan migraciones, compras, recepción única, cotizaciones, caja, Excel, PDF y comportamiento Windows.
 
-La compilación APK de comprobación está bloqueada actualmente por el entorno Android local: falta NDK `28.2.13676358` y `sdkmanager.bat` termina con `NTSTATUS 0xC0000409` al intentar resolverlo. Por ello no se afirma instalación ni prueba física en un teléfono hasta completar esa herramienta y repetir `flutter build apk --debug`.
+La compilación de comprobación `flutter build apk --debug --no-pub` fue aprobada con NDK `28.2.13676358`. El artefacto local se genera en `build/app/outputs/flutter-apk/app-debug.apk`. Esto valida el ensamblado Android, pero todavía no equivale a una prueba de instalación, persistencia, selector de documentos o impresión en un teléfono físico.
 
 ## Pendiente para etapas posteriores
 
-- instalar/verificar el NDK requerido y probar apertura, persistencia, selector, restauración, compartir e impresión en un dispositivo Android real;
+- probar apertura, persistencia, selector, restauración, compartir e impresión en un dispositivo Android real;
 - definir el identificador definitivo de aplicación, firma, iconos y política de privacidad;
 - diseñar autenticación remota, API, conflictos, asignación de existencias/cobranza offline y procesamiento de outbox;
 - probar sincronización entre equipos antes de mostrar “Sincronizado”;

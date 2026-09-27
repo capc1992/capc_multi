@@ -45,7 +45,7 @@ Verificación de esta rama:
 - `flutter test --no-pub --reporter expanded`: **160 pruebas aprobadas**. Las 3 nuevas comprueban adaptador Android, persistencia/reapertura, venta offline, idempotencia, stock, deuda, abonos, outbox, respaldo importado/exportado y navegación móvil; las pruebas anteriores conservan migración, compras, cotizaciones, caja, Excel, PDF y Windows.
 - `python tools/test_reset_owner_access.py`: **2 pruebas aprobadas**.
 - `flutter build windows --release --no-pub`: correcto; se generó `build/windows/x64/runner/Release/capc_multi.exe`. No se creó un paquete `dist` nuevo.
-- `flutter build apk --debug --no-pub`: bloqueado antes de compilar la aplicación. No existe un NDK instalado; Gradle requiere `28.2.13676358` y `sdkmanager.bat` termina con `-1073740791 (NTSTATUS 0xC0000409)`. No afirmar que existe un APK ni una prueba física Android hasta instalar/corregir esa herramienta y repetir la compilación.
+- `flutter build apk --debug --no-pub`: correcto con NDK `28.2.13676358`; se generó `build/app/outputs/flutter-apk/app-debug.apk` (169.822.809 bytes, SHA-256 `04BBA0BC079E2A7A2C1BB9130EBFA031F676ABF2AB79B52D7267C3C2AE0B9F0D`). La compilación no equivale a una prueba física en un teléfono.
 - No se abrió, copió ni modificó la base real del negocio. Todas las pruebas y respaldos de prueba usaron `:memory:` o directorios temporales.
 
 ## Excel y alta de cliente desde venta (0.3.0)
