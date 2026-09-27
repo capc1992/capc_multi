@@ -8,6 +8,11 @@ $capcProject = Split-Path -Parent $PSScriptRoot
 $capcRelease = Join-Path $capcProject 'build\windows\x64\runner\Release'
 $capcExecutable = Join-Path $capcRelease 'capc_multi.exe'
 $capcScript = Join-Path $capcProject 'installer\capc_multiservicio.iss'
+$capcExpectedAppId = 'AppId={{9A6B92F7-CB1F-49B3-9D91-7358AE30A3A8}'
+$capcInstallerSource = Get-Content -LiteralPath $capcScript -Raw
+if ($capcInstallerSource.IndexOf($capcExpectedAppId, [System.StringComparison]::Ordinal) -lt 0) {
+    throw 'El AppId de Inno Setup cambió. Debe permanecer fijo para actualizar la instalación existente.'
+}
 
 $capcPubspec = Get-Content -LiteralPath (Join-Path $capcProject 'pubspec.yaml') -Raw
 $capcVersionMatch = [regex]::Match($capcPubspec, '(?m)^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$')

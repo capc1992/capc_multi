@@ -56,6 +56,7 @@ Source: "{#ProjectDir}\docs\ABRIR-Y-RESPALDAR.md"; DestDir: "{app}"; DestName: "
 Source: "{#ProjectDir}\docs\GUIA-OPERACION.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ProjectDir}\docs\RECUPERAR-ACCESO.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ProjectDir}\docs\EXCEL.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ProjectDir}\docs\UPDATES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"

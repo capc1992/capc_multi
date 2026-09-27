@@ -1,0 +1,291 @@
+name: Publicar versión CAPC
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: Versión semántica X.Y.Z
+        required: true
+        type: string
+      build_number:
+        description: Número de compilación entero y creciente
+        required: true
+        type: string
+      channel:
+        description: Canal de Windows
+        required: true
+        default: stable
+        type: choice
+        options: [stable, beta, testing]
+      release_notes:
+        description: Notas de la versión, una por línea
+        required: true
+        type: string
+      mandatory:
+        description: Marcar como actualización obligatoria
+        required: true
+        default: false
+        type: boolean
+      android_track:
+        description: Pista de Google Play (usar internal inicialmente)
+        required: true
+        default: internal
+        type: choice
+        options: [internal, alpha, beta, production]
+      dry_run:
+        description: Compilar y verificar sin publicar
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  VERSION_NAME: ${{ inputs.version_name }}
+  BUILD_NUMBER: ${{ inputs.build_number }}
+
+jobs:
+  validate:
+    name: Formato, pruebas y servidor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Validar y aplicar versión al espacio de compilación
+        run: >-
+          python tools/release/prepare_release.py
+          --version-name "$VERSION_NAME"
+          --build-number "$BUILD_NUMBER"
+          --write
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed lib test
+      - run: flutter analyze --no-pub
+      - run: flutter test --no-pub
+      - run: python -m unittest discover -s tools -p "test_*.py"
+      - name: Instalar servidor
+        working-directory: server
+        run: npm ci
+      - name: Auditar dependencias de producción
+        working-directory: server
+        run: npm audit --omit=dev --audit-level=high
+      - name: Verificar tipos y pruebas del servidor
+        working-directory: server
+        run: npm run check && npm test && npm run build
+
+  windows:
+    name: Windows e instalador
+    needs: validate
+    runs-on: windows-latest
+    env:
+      WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+      CAPC_WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      WINDOWS_EXPECTED_PUBLISHER: ${{ secrets.WINDOWS_EXPECTED_PUBLISHER }}
+      RELEASE_NOTES: ${{ inputs.release_notes }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Preparar versión
+        run: >-
+          python tools/release/prepare_release.py
+          --version-name "$env:VERSION_NAME"
+          --build-number "$env:BUILD_NUMBER"
+          --write
+      - run: flutter pub get
+      - run: flutter build windows --release --no-pub
+      - name: Comprobar secretos de firma
+        shell: pwsh
+        run: |
+          $required = @($env:WINDOWS_CERT_PFX_BASE64, $env:CAPC_WINDOWS_CERT_PASSWORD, $env:WINDOWS_EXPECTED_PUBLISHER)
+          if ('${{ inputs.dry_run }}' -ne 'true' -and $required.Where({ -not $_ }).Count -gt 0) {
+            throw 'Faltan WINDOWS_CERT_PFX_BASE64, WINDOWS_CERT_PASSWORD o WINDOWS_EXPECTED_PUBLISHER.'
+          }
+      - name: Firmar ejecutable Windows
+        if: ${{ env.WINDOWS_CERT_PFX_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          $cert = Join-Path $env:RUNNER_TEMP 'capc-windows.pfx'
+          [IO.File]::WriteAllBytes($cert, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          ./tools/release/sign-windows.ps1 -FilePath build/windows/x64/runner/Release/capc_multi.exe -CertificatePath $cert -ExpectedPublisher $env:WINDOWS_EXPECTED_PUBLISHER
+          Remove-Item -LiteralPath $cert -Force
+      - run: choco install innosetup --no-progress -y
+      - name: Crear instalador con AppId estable
+        shell: pwsh
+        run: ./tools/build-windows-installer.ps1 -Version $env:VERSION_NAME
+      - name: Firmar instalador Windows
+        if: ${{ env.WINDOWS_CERT_PFX_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          $cert = Join-Path $env:RUNNER_TEMP 'capc-windows.pfx'
+          [IO.File]::WriteAllBytes($cert, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          $installer = "dist/CAPC-MULTISERVICIO-Setup-$env:VERSION_NAME.exe"
+          ./tools/release/sign-windows.ps1 -FilePath $installer -CertificatePath $cert -ExpectedPublisher $env:WINDOWS_EXPECTED_PUBLISHER
+          Remove-Item -LiteralPath $cert -Force
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
+          ($hash + '  ' + (Split-Path -Leaf $installer)) | Set-Content -LiteralPath ($installer + '.sha256') -Encoding Ascii
+      - name: Generar y validar latest.json
+        shell: pwsh
+        run: |
+          python tools/release/latest_manifest.py generate `
+            --installer "dist/CAPC-MULTISERVICIO-Setup-$env:VERSION_NAME.exe" `
+            --output dist/latest.json `
+            --version-name $env:VERSION_NAME `
+            --build-number $env:BUILD_NUMBER `
+            --channel '${{ inputs.channel }}' `
+            --mandatory '${{ inputs.mandatory }}' `
+            --minimum-supported-build 7 `
+            --release-notes $env:RELEASE_NOTES
+          python tools/release/latest_manifest.py validate --manifest dist/latest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capc-windows-release
+          if-no-files-found: error
+          path: |
+            dist/CAPC-MULTISERVICIO-Setup-*.exe
+            dist/CAPC-MULTISERVICIO-Setup-*.exe.sha256
+            dist/latest.json
+
+  android:
+    name: Android App Bundle
+    needs: validate
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      CAPC_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+      CAPC_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      CAPC_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Preparar versión
+        run: >-
+          python tools/release/prepare_release.py
+          --version-name "$VERSION_NAME"
+          --build-number "$BUILD_NUMBER"
+          --write
+      - run: flutter pub get
+      - name: Preparar firma Android sin exponer secretos
+        shell: bash
+        run: |
+          set -eu
+          if [[ '${{ inputs.dry_run }}' != 'true' ]] && grep -q 'applicationId = "com.example.' android/app/build.gradle.kts; then
+            echo 'La publicación real está bloqueada: define el applicationId definitivo antes de crear la app en Google Play.' >&2
+            exit 1
+          fi
+          if [[ '${{ inputs.dry_run }}' != 'true' ]] && { [[ -z "$ANDROID_KEYSTORE_BASE64" ]] || [[ -z "$CAPC_ANDROID_STORE_PASSWORD" ]] || [[ -z "$CAPC_ANDROID_KEY_ALIAS" ]] || [[ -z "$CAPC_ANDROID_KEY_PASSWORD" ]]; }; then
+            echo 'Faltan ANDROID_KEYSTORE_BASE64, ANDROID_STORE_PASSWORD, ANDROID_KEY_ALIAS o ANDROID_KEY_PASSWORD.' >&2
+            exit 1
+          fi
+          if [[ -n "$ANDROID_KEYSTORE_BASE64" ]]; then
+            CAPC_ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/capc-upload.jks"
+            export CAPC_ANDROID_KEYSTORE_PATH
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$CAPC_ANDROID_KEYSTORE_PATH"
+            echo "CAPC_ANDROID_KEYSTORE_PATH=$CAPC_ANDROID_KEYSTORE_PATH" >> "$GITHUB_ENV"
+          else
+            echo 'CAPC_ALLOW_DEBUG_RELEASE_SIGNING=true' >> "$GITHUB_ENV"
+            echo 'DRY RUN: el AAB usa firma de depuración y no es publicable.'
+          fi
+      - run: flutter build appbundle --release --no-pub
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capc-android-release
+          if-no-files-found: error
+          path: build/app/outputs/bundle/release/app-release.aab
+
+  publish:
+    name: Publicar artefactos verificados
+    if: ${{ inputs.dry_run == false }}
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+      UPDATES_SSH_PRIVATE_KEY: ${{ secrets.UPDATES_SSH_PRIVATE_KEY }}
+      UPDATES_SSH_KNOWN_HOSTS: ${{ secrets.UPDATES_SSH_KNOWN_HOSTS }}
+      UPDATES_VPS_HOST: ${{ secrets.UPDATES_VPS_HOST }}
+      UPDATES_VPS_USER: ${{ secrets.UPDATES_VPS_USER }}
+      UPDATES_PUBLISH_PATH: ${{ secrets.UPDATES_PUBLISH_PATH }}
+    steps:
+      - name: Validar secretos de publicación
+        shell: bash
+        run: |
+          set -eu
+          for name in GOOGLE_PLAY_SERVICE_ACCOUNT_JSON UPDATES_SSH_PRIVATE_KEY UPDATES_SSH_KNOWN_HOSTS UPDATES_VPS_HOST UPDATES_VPS_USER UPDATES_PUBLISH_PATH; do
+            [[ -n "${!name}" ]] || { echo "Falta el secreto $name." >&2; exit 1; }
+          done
+          [[ "$UPDATES_PUBLISH_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo 'UPDATES_PUBLISH_PATH no es una ruta absoluta segura.' >&2; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          name: capc-windows-release
+          path: artifacts/windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: capc-android-release
+          path: artifacts/android
+      - name: Publicar AAB en Google Play
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.example.capc_multi
+          releaseFiles: artifacts/android/app-release.aab
+          track: ${{ inputs.android_track }}
+          status: completed
+      - name: Preparar SSH
+        shell: bash
+        run: |
+          set -eu
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$UPDATES_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$UPDATES_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+      - name: Subir instalador, verificarlo y publicar manifiesto al final
+        shell: bash
+        run: |
+          set -euo pipefail
+          installer="artifacts/windows/CAPC-MULTISERVICIO-Setup-$VERSION_NAME.exe"
+          manifest="artifacts/windows/latest.json"
+          expected_sha="$(sha256sum "$installer" | cut -d' ' -f1)"
+          target="$UPDATES_VPS_USER@$UPDATES_VPS_HOST"
+          remote_dir="$UPDATES_PUBLISH_PATH/windows/${{ inputs.channel }}/$VERSION_NAME"
+          latest_dir="$UPDATES_PUBLISH_PATH/windows/${{ inputs.channel }}"
+          ssh "$target" mkdir -p "$remote_dir" "$latest_dir"
+          scp "$installer" "$target:$remote_dir/.installer.tmp"
+          actual_sha="$(ssh "$target" sha256sum "$remote_dir/.installer.tmp" | cut -d' ' -f1)"
+          [[ "$actual_sha" == "$expected_sha" ]] || { echo 'SHA-256 remoto no coincide.' >&2; exit 1; }
+          ssh "$target" mv "$remote_dir/.installer.tmp" "$remote_dir/CAPC-MULTISERVICIO-Setup-$VERSION_NAME.exe"
+          scp "$manifest" "$target:$latest_dir/.latest.json.tmp"
+          ssh "$target" chmod 0644 "$remote_dir/CAPC-MULTISERVICIO-Setup-$VERSION_NAME.exe" "$latest_dir/.latest.json.tmp"
+          ssh "$target" mv "$latest_dir/.latest.json.tmp" "$latest_dir/latest.json"
+      - name: Crear tag y versión de GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        shell: bash
+        run: |
+          set -eu
+          notes_file="$RUNNER_TEMP/capc-release-notes.txt"
+          printf '%s\n' "$RELEASE_NOTES" > "$notes_file"
+          gh release create "v$VERSION_NAME+$BUILD_NUMBER" \
+            "artifacts/windows/CAPC-MULTISERVICIO-Setup-$VERSION_NAME.exe" \
+            artifacts/windows/latest.json \
+            artifacts/android/app-release.aab \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "CAPC MULTISERVICIO $VERSION_NAME ($BUILD_NUMBER)" \
+            --notes-file "$notes_file"

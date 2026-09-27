@@ -2,6 +2,7 @@ package com.example.capc_multi
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -22,6 +23,31 @@ class MainActivity : FlutterActivity() {
                     "deviceInfo" -> result.success(
                         "${Build.MANUFACTURER} ${Build.MODEL}".trim()
                     )
+                    "openPlayStore" -> {
+                        val market = Intent(
+                            Intent.ACTION_VIEW,
+                            Uri.parse("market://details?id=$packageName"),
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        val web = Intent(
+                            Intent.ACTION_VIEW,
+                            Uri.parse("https://play.google.com/store/apps/details?id=$packageName"),
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        try {
+                            startActivity(market)
+                            result.success(null)
+                        } catch (_: Exception) {
+                            try {
+                                startActivity(web)
+                                result.success(null)
+                            } catch (error: Exception) {
+                                result.error(
+                                    "play_store_unavailable",
+                                    "No se pudo abrir Google Play.",
+                                    error.message,
+                                )
+                            }
+                        }
+                    }
                     "saveDocument" -> {
                         if (pendingResult != null) {
                             result.error(

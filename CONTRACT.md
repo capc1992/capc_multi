@@ -20,6 +20,14 @@ SQLite conserva claves foráneas, WAL, synchronous FULL, identificadores UUID, e
 
 No se destruyen ni recrean datos del negocio durante actualización. Una versión posterior desconocida se rechaza. La base vacía exige alta de propietario; una base v1 migrada también exige crear su propietario antes de operar.
 
+## Actualizaciones del programa
+
+`Actualizar datos` recarga o sincroniza información; no actualiza el ejecutable. El centro de `Actualizaciones` obtiene la versión real del paquete y comprueba en segundo plano, como máximo una vez cada 24 horas, sin bloquear el inicio ni la operación offline.
+
+Windows acepta manifiestos e instaladores únicamente por HTTPS desde el dominio CAPC autorizado, rechaza redirecciones externas y versiones no crecientes, y valida tamaño, SHA-256, Authenticode y editor antes de ejecutar. Crea un respaldo coherente y conserva SQLite, respaldos, configuración y documentos. El AppId de Inno Setup debe permanecer fijo. Un instalador sin firma comercial nunca se ejecuta automáticamente en producción.
+
+Android usa Google Play In-App Updates: flexible por defecto e inmediata únicamente para una actualización obligatoria o crítica. No descarga APK directamente. Versiones, publicaciones, secretos pendientes y recuperación se especifican en `docs/UPDATES.md`.
+
 ## Sincronización opcional
 
 La outbox se escribe en la misma transacción que la mutación local. `lib/sync/` reclama eventos, registra intentos, confirma por `operation_id`, recibe cambios posteriores a un cursor monotónico y los conserva en inbox antes de materializarlos. Sin `CAPC_SYNC_URL` no realiza tráfico y el estado es `local_only`.

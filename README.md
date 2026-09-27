@@ -10,6 +10,8 @@ La arquitectura móvil está en [Android offline](docs/ANDROID.md). El protocolo
 
 Para usar el programa compilado, abre `ABRIR_CAPC.cmd`. Consulta [la guía de operación](docs/GUIA-OPERACION.md) y [las instrucciones de respaldo](docs/ABRIR-Y-RESPALDAR.md).
 
+El centro de actualización del programa está documentado en [docs/UPDATES.md](docs/UPDATES.md). Es independiente de `Actualizar datos`: Windows usa un instalador firmado y verificado; Android usa Google Play. Sin internet, la aplicación local continúa funcionando.
+
 Para desarrollar con Flutter desde IntelliJ o terminal, trabaja en `C:\Users\CAPC\capc_multi`:
 
 ```powershell

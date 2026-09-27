@@ -2,6 +2,16 @@
 
 Actualizado el 27 de septiembre de 2026. Proyecto canónico: `C:\Users\CAPC\capc_multi`.
 
+## Actualizaciones multiplataforma — `feature/cross-platform-updates`
+
+Rama creada desde `origin/feature/cloud-sync-identity`, sin fusionar `master`. Se añadió `lib/update/` y `Configuración > Actualizaciones`: versión real del paquete, canales, consulta diferida cada 24 horas, estados offline/error, descarga segura de Windows y Google Play In-App Updates en Android. El botón existente `Actualizar datos` sigue siendo solo una recarga de datos.
+
+Windows exige HTTPS y dominio CAPC, valida redirecciones, tamaño, SHA-256, Authenticode y editor; respalda SQLite antes de abrir Inno. El AppId `{9A6B92F7-CB1F-49B3-9D91-7358AE30A3A8}` está auditado. El instalador actual no tiene certificado comercial, por lo que la instalación automática de producción permanece bloqueada hasta configurar firma y editor esperado.
+
+El workflow manual `Publicar versión CAPC` tiene `dry_run=true` por defecto y prepara Windows, `latest.json` y Android AAB. No despliega sincronización ni ejecuta migraciones. La publicación real sigue bloqueada además porque Android usa `com.example.capc_multi`; debe acordarse el identificador definitivo y configurar Play App Signing antes de la primera publicación. Secretos y operación: `docs/UPDATES.md`. Nginx preparado pero no aplicado: `deploy/nginx/updates.capcmultiservicios.site.conf`. No se accedió al VPS ni a bases reales.
+
+Verificación local de esta rama: formato y análisis sin observaciones; 186 pruebas Flutter, 6 pruebas unitarias Python y 6 pruebas unitarias del servidor aprobadas; typecheck/build del servidor correctos; auditoría npm de producción con 0 vulnerabilidades. Windows release e instalador `dist/CAPC-MULTISERVICIO-Setup-0.4.0.exe` correctos; el manifiesto generado fue validado. El AAB release de comprobación se creó con firma debug autorizada solo para `dry_run`, por lo que no es publicable. La ejecución en PostgreSQL real continúa cubierta por el workflow de identidad y no se volvió a ejecutar localmente.
+
 ## Etapa 2 en curso — `feature/cloud-sync-identity`
 
 Rama creada limpia desde `origin/feature/cloud-sync-foundation` (`6559b7a`), que contiene el commit obligatorio `858dedbc31367074408ebe623027b3381e0b97d5`. No se fusionó `master`, no se accedió al VPS y no se abrió ni modificó la base real.

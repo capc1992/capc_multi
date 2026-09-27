@@ -13,12 +13,14 @@ import '../services/document_preview.dart';
 import '../services/reporting.dart';
 import '../services/spreadsheets.dart';
 import '../sync/remote_identity.dart';
+import '../update/update_controller.dart';
 import 'access_gate.dart';
 import 'account_security.dart';
 import 'management_pages.dart';
 import 'remote_identity_page.dart';
 import 'spreadsheet_actions.dart';
 import 'ui_shared.dart';
+import 'update_page.dart';
 
 const _navy = Color(0xFF142638);
 const _green = Color(0xFF087F5B);
@@ -34,9 +36,15 @@ String _timestamp(DateTime value) =>
     DateFormat('dd/MM/yyyy · HH:mm').format(_bogota(value));
 
 class CapcApp extends StatelessWidget {
-  const CapcApp({super.key, required this.repository, this.remoteIdentity});
+  const CapcApp({
+    super.key,
+    required this.repository,
+    this.remoteIdentity,
+    this.updateController,
+  });
   final CapcRepository repository;
   final RemoteIdentityController? remoteIdentity;
+  final UpdateController? updateController;
 
   @override
   Widget build(BuildContext context) {
@@ -124,6 +132,7 @@ class CapcApp extends StatelessWidget {
           remoteIdentity:
               remoteIdentity ??
               RemoteIdentityController(repository: repository),
+          updateController: updateController,
         ),
       ),
     );
@@ -135,10 +144,12 @@ class _CapcHome extends StatefulWidget {
     required this.repository,
     required this.onLogout,
     required this.remoteIdentity,
+    required this.updateController,
   });
   final CapcRepository repository;
   final VoidCallback onLogout;
   final RemoteIdentityController remoteIdentity;
+  final UpdateController? updateController;
   @override
   State<_CapcHome> createState() => _CapcHomeState();
 }
@@ -2171,6 +2182,33 @@ class _CapcHomeState extends State<_CapcHome> {
         ],
       ),
       const SizedBox(height: 20),
+      if (widget.updateController != null) ...[
+        _section(
+          'Actualizaciones',
+          children: [
+            const Text(
+              'Comprueba e instala nuevas versiones del programa. Esto es distinto de “Actualizar datos”, que solo recarga la información local de las pantallas.',
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: _busy
+                  ? null
+                  : () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => UpdatePage(
+                          controller: widget.updateController!,
+                          repository: widget.repository,
+                          canInstall: _owner,
+                        ),
+                      ),
+                    ),
+              icon: const Icon(Icons.system_update_alt),
+              label: const Text('Abrir centro de actualizaciones'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 20),
+      ],
       _section(
         'Copia de seguridad',
         children: [
