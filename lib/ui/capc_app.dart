@@ -450,21 +450,14 @@ class _CapcHomeState extends State<_CapcHome> {
     color: _navy,
     child: Column(
       children: [
-        const Padding(
+        Padding(
           padding: EdgeInsets.fromLTRB(20, 24, 20, 16),
-          child: Row(
-            children: [
-              Icon(Icons.storefront_outlined, color: Colors.white),
-              SizedBox(width: 12),
-              Text(
-                'CAPC MULTISERVICIO',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
+          child: Image.asset(
+            'assets/branding/capc_logo_horizontal.png',
+            height: 58,
+            fit: BoxFit.contain,
+            alignment: Alignment.centerLeft,
+            semanticLabel: 'CAPC MULTISERVICIO',
           ),
         ),
         Expanded(
@@ -518,38 +511,24 @@ class _CapcHomeState extends State<_CapcHome> {
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 16),
-            child: Row(
-              children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: _green,
+            padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 12),
+            child: wide
+                ? Image.asset(
+                    'assets/branding/capc_logo_horizontal.png',
+                    height: 58,
+                    fit: BoxFit.contain,
+                    semanticLabel: 'CAPC MULTISERVICIO',
+                  )
+                : ClipRRect(
                     borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(
-                    Icons.storefront_outlined,
-                    color: Colors.white,
-                  ),
-                ),
-                if (wide)
-                  const Expanded(
-                    child: Padding(
-                      padding: EdgeInsets.only(left: 12),
-                      child: Text(
-                        'CAPC',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 25,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 1,
-                        ),
-                      ),
+                    child: Image.asset(
+                      'assets/branding/capc_app_icon_master.png',
+                      width: 48,
+                      height: 48,
+                      fit: BoxFit.cover,
+                      semanticLabel: 'CAPC',
                     ),
                   ),
-              ],
-            ),
           ),
           Expanded(
             child: ListView.builder(

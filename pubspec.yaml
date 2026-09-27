@@ -31,10 +31,13 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
   file_selector_platform_interface: ^2.7.0
+  flutter_launcher_icons: ^0.14.4
 
 flutter:
   uses-material-design: true
   assets:
+    - assets/branding/capc_logo_horizontal.png
+    - assets/branding/capc_app_icon_master.png
     - assets/fonts/Roboto-Regular.ttf
     - assets/fonts/Roboto-Bold.ttf
     - assets/fonts/LICENSE.txt
@@ -44,3 +47,18 @@ flutter:
         - asset: assets/fonts/Roboto-Regular.ttf
         - asset: assets/fonts/Roboto-Bold.ttf
           weight: 700
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: false
+  image_path: "assets/branding/capc_app_icon_master.png"
+  min_sdk_android: 21
+  web:
+    generate: true
+    image_path: "assets/branding/capc_app_icon_master.png"
+    background_color: "#142638"
+    theme_color: "#142638"
+  windows:
+    generate: true
+    image_path: "assets/branding/capc_app_icon_master.png"
+    icon_size: 256
