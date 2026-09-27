@@ -43,3 +43,11 @@ Esta versión trabaja sin internet en un negocio/caja local. Android, conexión 
 El archivo `CAPC-MULTISERVICIO-0.4.0-....zip` es el paquete portable instalable. Copia el ZIP completo a cada equipo, verifica su archivo `.sha256`, extráelo en una carpeta propia y ejecuta `capc_multi.exe`. No copies únicamente el EXE: las DLL y la carpeta `data` son obligatorias.
 
 Cada equipo crea su propia base SQLite y guarda las credenciales remotas en Windows Credential Manager. El ZIP no contiene datos, contraseñas ni tokens. Sin una compilación con `CAPC_SYNC_URL`, los equipos funcionan separados y completamente offline; copiar el programa no sincroniza bases. Para compartir un negocio remoto, el primer equipo debe generar un código temporal y el segundo debe estar nuevo o sin movimientos. Una base con movimientos requiere respaldo y migración explícita.
+
+## Instalador de Windows
+
+`CAPC-MULTISERVICIO-Setup-0.4.0.exe` instala la aplicación para el usuario actual, crea una entrada en el menú Inicio, ofrece un acceso directo de escritorio y registra un desinstalador en Configuración de Windows. La instalación y la desinstalación no incluyen ni eliminan la base SQLite del negocio, que vive fuera de la carpeta del programa.
+
+El instalador aún no tiene firma comercial. Verifica primero el archivo `.sha256`; Windows puede mostrar una advertencia de SmartScreen aunque la huella sea correcta. No desactives el antivirus ni descargues copias desde ubicaciones distintas a la entrega controlada.
+
+Ejecuta el mismo instalador en cada computador. Mientras `CAPC_SYNC_URL` continúe desactivada, ambos equipos funcionan offline con bases independientes; instalar la aplicación no activa por sí solo la sincronización.

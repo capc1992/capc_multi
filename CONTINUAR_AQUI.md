@@ -10,6 +10,10 @@ Implementado: identidad remota por negocio/propietario/dispositivo; sesiones y r
 
 La app sigue 100 % offline sin `CAPC_SYNC_URL`. `https://api.capcmultiservicios.site` solo está preparada como referencia y no se activa en compilaciones normales. El paquete Windows es portable: se distribuye el ZIP completo y puede extraerse en dos o más equipos; cada equipo conserva su SQLite y credencial segura privada.
 
+El proyecto Inno Setup reproducible está en `installer/capc_multiservicio.iss` y `tools/build-windows-installer.ps1`. Genera un instalador por usuario con accesos directos y desinstalador, sin empaquetar ni borrar la base real. El workflow de Windows publica tanto el ZIP portable como el instalador `.exe`.
+
+Instalador local verificado: `dist/CAPC-MULTISERVICIO-Setup-0.4.0.exe` (16.288.880 bytes), SHA-256 `207054A6E77D55F71738BE9AF545D3D54D690145B29EAF07F3B7C39D531A59C7`. La prueba silenciosa instaló 31 archivos en `tmp`, confirmó que no había bases `.db/.sqlite/.sqlite3`, encontró `flutter_secure_storage_windows_plugin.dll` y completó la desinstalación con código 0. El ejecutable todavía no tiene una firma comercial, por lo que Windows puede mostrar SmartScreen; no se creó ni usó un certificado improvisado.
+
 Validación local final: formato estable; análisis Flutter sin observaciones; **170 pruebas Flutter**, 2 pruebas Python y 6 pruebas unitarias del servidor aprobadas; typecheck y build TypeScript correctos; auditoría npm de producción con 0 vulnerabilidades; APK debug y Windows release compilados. Las 6 pruebas PostgreSQL se omiten localmente porque este computador no tiene PostgreSQL. El paquete definitivo es `dist/CAPC-MULTISERVICIO-0.4.0-20260927-154149-290.zip`, SHA-256 `23DFF81F7AD021B5B49EE645ABAE6CA74A8C13A236A426789CC9497E53DB9CE9`, e incluye `flutter_secure_storage_windows_plugin.dll`. No declarar aprobada la integración hasta que GitHub Actions ejecute `Cloud Sync Identity` con PostgreSQL 16 y termine verde; después deben registrarse aquí commit y ejecución.
 
 ## Alcance y autorización vigentes
