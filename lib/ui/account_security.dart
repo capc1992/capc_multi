@@ -1,10 +1,16 @@
 import 'dart:convert';
 
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../data/repository.dart';
+import '../platform/platform_services.dart';
+
+const _recoveryTextType = DocumentType(
+  label: 'Archivo de texto',
+  extensions: ['txt'],
+  mimeType: 'text/plain',
+);
 
 class AccountSecurityPage extends StatefulWidget {
   const AccountSecurityPage({super.key, required this.repository});
@@ -229,13 +235,6 @@ class _RecoveryCodePanelState extends State<RecoveryCodePanel> {
           );
         }
       } else {
-        final destination = await getSaveLocation(
-          suggestedName: 'CAPC-codigo-recuperacion.txt',
-          acceptedTypeGroups: const [
-            XTypeGroup(label: 'Archivo de texto', extensions: ['txt']),
-          ],
-        );
-        if (destination == null) return;
         final content =
             'CAPC MULTISERVICIO — Recuperación de acceso\n'
             'Usuario: ${widget.username}\n'
@@ -244,11 +243,12 @@ class _RecoveryCodePanelState extends State<RecoveryCodePanel> {
             'Este código permite cambiar tu contraseña y se puede usar una sola vez.\n'
             'En la pantalla de ingreso, elige «Olvidé mi contraseña».\n'
             'Después de usarlo, genera un nuevo código en «Seguridad de mi cuenta».\n';
-        await XFile.fromData(
-          Uint8List.fromList(utf8.encode(content)),
-          mimeType: 'text/plain',
-          name: 'CAPC-codigo-recuperacion.txt',
-        ).saveTo(destination.path);
+        final saved = await appPlatform.saveDocument(
+          buildBytes: () async => Uint8List.fromList(utf8.encode(content)),
+          suggestedName: 'CAPC-codigo-recuperacion.txt',
+          type: _recoveryTextType,
+        );
+        if (saved == null) return;
         if (mounted) {
           setState(
             () => _notice = 'Archivo guardado. Consérvalo en un lugar seguro.',

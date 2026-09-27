@@ -5,10 +5,11 @@ import 'dart:math';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:path/path.dart' as p;
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:sqflite_common/sqlite_api.dart';
 import 'package:sqlite3/sqlite3.dart' as native;
 import 'package:uuid/uuid.dart';
 
+import '../platform/platform_services.dart';
 import 'models.dart';
 export 'models.dart';
 part 'operations.dart';
@@ -104,10 +105,9 @@ class CapcRepository {
   }
 
   static Future<Database> _openDatabase(String path) async {
-    sqfliteFfiInit();
-    return databaseFactoryFfi.openDatabase(
+    return appPlatform.database.open(
       path,
-      options: OpenDatabaseOptions(
+      OpenDatabaseOptions(
         version: _schemaVersion,
         singleInstance: false,
         onConfigure: (db) async {
@@ -2790,7 +2790,7 @@ class CapcRepository {
         }
         final resolved = p.normalize(p.absolute(value));
         final parent = p.dirname(path);
-        final starts = Platform.isWindows
+        final starts = appPlatform.caseInsensitivePaths
             ? resolved.toLowerCase().startsWith(prefix.toLowerCase())
             : resolved.startsWith(prefix);
         if (!starts ||
@@ -2886,7 +2886,7 @@ class CapcRepository {
   static bool _samePath(String a, String b) {
     final first = p.normalize(p.absolute(a)),
         second = p.normalize(p.absolute(b));
-    return Platform.isWindows
+    return appPlatform.caseInsensitivePaths
         ? first.toLowerCase() == second.toLowerCase()
         : first == second;
   }

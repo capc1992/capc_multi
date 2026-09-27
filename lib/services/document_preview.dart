@@ -1,9 +1,16 @@
 import 'dart:typed_data';
 
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:pdf/pdf.dart';
 import 'package:printing/printing.dart';
+
+import '../platform/platform_services.dart';
+
+const _previewPdfType = DocumentType(
+  label: 'Documento PDF',
+  extensions: ['pdf'],
+  mimeType: 'application/pdf',
+);
 
 /// A preview never prints as a side effect of opening or rebuilding the view.
 Future<void> showCapcDocument(
@@ -39,7 +46,7 @@ class _DocumentDialogState extends State<_DocumentDialog> {
       ? const PdfPageFormat(80 * PdfPageFormat.mm, 250 * PdfPageFormat.mm)
       : PdfPageFormat.letter;
 
-  Future<void> _action(bool print) async {
+  Future<void> _action(_DocumentAction action) async {
     if (_busy) return;
     setState(() {
       _busy = true;
@@ -47,36 +54,41 @@ class _DocumentDialogState extends State<_DocumentDialog> {
     });
     try {
       final bytes = await _document;
-      if (print) {
-        final printed = await Printing.layoutPdf(
+      if (action == _DocumentAction.print) {
+        final printed = await appPlatform.printPdf(
+          bytes: bytes,
           name: widget.title,
           format: _format,
-          dynamicLayout: false,
-          windowsModernDialog: true,
-          onLayout: (_) async => bytes,
         );
         if (mounted) {
           setState(
             () => _message = printed
-                ? 'Documento enviado mediante el diálogo de Windows. Comprueba la salida de papel antes de repetir.'
+                ? 'Documento enviado mediante el diálogo de impresión. Comprueba la salida de papel antes de repetir.'
                 : 'Impresión cancelada.',
           );
         }
+      } else if (action == _DocumentAction.share) {
+        final shared = await appPlatform.sharePdf(
+          bytes: bytes,
+          name:
+              '${widget.title.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '-')}.pdf',
+        );
+        if (mounted) {
+          setState(
+            () => _message = shared
+                ? 'Se abrió el panel para compartir el PDF.'
+                : 'No se compartió el PDF.',
+          );
+        }
       } else {
-        final destination = await getSaveLocation(
+        final saved = await appPlatform.saveDocument(
+          buildBytes: () async => bytes,
           suggestedName:
               '${widget.title.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '-')}.pdf',
-          acceptedTypeGroups: const [
-            XTypeGroup(label: 'Documento PDF', extensions: ['pdf']),
-          ],
-          confirmButtonText: 'Guardar PDF',
+          type: _previewPdfType,
         );
-        if (destination != null) {
-          await XFile.fromData(
-            bytes,
-            mimeType: 'application/pdf',
-          ).saveTo(destination.path);
-          if (mounted) setState(() => _message = 'PDF guardado.');
+        if (saved != null && mounted) {
+          setState(() => _message = 'PDF guardado.');
         }
       }
     } catch (error) {
@@ -154,12 +166,22 @@ class _DocumentDialogState extends State<_DocumentDialog> {
               runSpacing: 12,
               children: [
                 OutlinedButton.icon(
-                  onPressed: _busy ? null : () => _action(false),
+                  onPressed: _busy ? null : () => _action(_DocumentAction.save),
                   icon: const Icon(Icons.save_alt),
                   label: const Text('Guardar PDF'),
                 ),
+                if (appPlatform.supportsDocumentSharing)
+                  OutlinedButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () => _action(_DocumentAction.share),
+                    icon: const Icon(Icons.share_outlined),
+                    label: const Text('Compartir PDF'),
+                  ),
                 FilledButton.icon(
-                  onPressed: _busy ? null : () => _action(true),
+                  onPressed: _busy
+                      ? null
+                      : () => _action(_DocumentAction.print),
                   icon: const Icon(Icons.print_outlined),
                   label: const Text('Imprimir…'),
                 ),
@@ -171,3 +193,5 @@ class _DocumentDialogState extends State<_DocumentDialog> {
     ),
   );
 }
+
+enum _DocumentAction { save, share, print }

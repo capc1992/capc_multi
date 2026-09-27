@@ -12,6 +12,7 @@ dependencies:
   flutter_localizations:
     sdk: flutter
   sqflite_common_ffi: ^2.4.3
+  sqflite_common: ^2.5.13
   sqlite3: ^3.0.0
   path_provider: ^2.1.5
   path: ^1.9.1

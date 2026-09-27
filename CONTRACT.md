@@ -1,12 +1,14 @@
 ﻿# Contrato local CAPC MULTISERVICIO - esquema 2
 
-Este contrato sustituye el alcance antiguo sin autenticación. La interfaz y las operaciones locales son para Windows, español, COP enteros y cantidades enteras. Una empresa/caja local activa; sin servidor ni sincronización. La carpeta canónica es `C:\Users\CAPC\capc_multi`.
+Este contrato sustituye el alcance antiguo sin autenticación. La interfaz y las operaciones locales comparten reglas entre Windows y la adaptación Android offline, en español, COP enteros y cantidades enteras. Una empresa/caja local activa; sin servidor ni sincronización. Windows `0.3.0` continúa como base estable. La carpeta canónica es `C:\Users\CAPC\capc_multi`.
 
 ## Arquitectura y compatibilidad
 
 `lib/data/models.dart` exporta los modelos comunes y `operations_models.dart`. `CapcRepository` es la frontera transaccional y de autorización. `operations.dart` comparte su biblioteca y reutiliza ejecutores de transacción para compras, cotizaciones y trabajos: no anida transacciones públicas.
 
-SQLite conserva claves foráneas, WAL, synchronous FULL, identificadores UUID, eventos locales e historial. Migración v1 a v2 conserva productos, clientes, líneas históricas, ventas, pagos, movimientos, numeración y operaciones idempotentes. Las nuevas tablas identifican negocio y dispositivo; las consultas se limitan al negocio local. La aplicación Windows permite una sola instancia por sesión para evitar restauraciones concurrentes.
+SQLite conserva claves foráneas, WAL, synchronous FULL, identificadores UUID, eventos locales e historial. Migración v1 a v2 conserva productos, clientes, líneas históricas, ventas, pagos, movimientos, numeración y operaciones idempotentes. Las nuevas tablas identifican negocio y dispositivo; las consultas se limitan al negocio local. La aplicación Windows permite una sola instancia por sesión para evitar restauraciones concurrentes; el mutex y el código nativo de ventana no se ejecutan en Android.
+
+`AppPlatformServices` separa ubicación privada, driver local, selector/exportación, impresión/compartir e información del dispositivo. Windows y Android reutilizan `CapcRepository` y el mismo SQLite incluido; no existen repositorios de negocio duplicados por plataforma.
 
 No se destruyen ni recrean datos del negocio durante actualización. Una versión posterior desconocida se rechaza. La base vacía exige alta de propietario; una base v1 migrada también exige crear su propietario antes de operar.
 
@@ -60,4 +62,4 @@ Trabajos Recibido/En proceso/Listo/Entregado con responsable y fecha prevista. A
 
 Respaldo consistente SQLite y validación antes de ofrecerlo. Restauración trabaja sobre copia temporal, valida integridad/esquema/referencias y conserva copia previa antes de reemplazar bajo acceso exclusivo. `recoverDatabase` permite restaurar desde fallo de inicio verificando credenciales propietarias del respaldo. No mezclar -wal/-shm de bases distintas.
 
-No hay cifrado integral de SQLite, sincronización remota, multiempresa activa, Android publicado ni facturación electrónica. El historial de auditoría no sustituye protección del usuario y archivos en Windows.
+No hay cifrado integral de SQLite, sincronización remota, multiempresa activa, Android publicado ni facturación electrónica. El historial de auditoría no sustituye la protección del usuario y de los archivos del sistema. La compilación Android de comprobación sigue pendiente del NDK requerido; consulta `docs/ANDROID.md`.

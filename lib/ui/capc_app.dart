@@ -1,4 +1,3 @@
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,6 +6,8 @@ import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 
 import '../data/repository.dart';
+import '../platform/platform_services.dart';
+import '../services/backup_transfer.dart';
 import '../services/documents.dart';
 import '../services/document_preview.dart';
 import '../services/reporting.dart';
@@ -172,6 +173,7 @@ class _CapcHomeState extends State<_CapcHome> {
   int _inventoryPage = 0;
   late DateTime _reportFrom;
   late DateTime _reportTo;
+  late final Future<DeviceSummary> _deviceSummary;
 
   @override
   void initState() {
@@ -179,6 +181,7 @@ class _CapcHomeState extends State<_CapcHome> {
     final today = _day(_bogota(DateTime.now()));
     _reportFrom = DateTime(today.year, today.month, 1);
     _reportTo = today;
+    _deviceSummary = appPlatform.deviceSummary();
     _refresh();
   }
 
@@ -293,7 +296,9 @@ class _CapcHomeState extends State<_CapcHome> {
 
   @override
   Widget build(BuildContext context) {
+    final compact = MediaQuery.sizeOf(context).width < 700;
     return Scaffold(
+      drawer: compact ? Drawer(child: SafeArea(child: _mobileDrawer())) : null,
       body: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
@@ -302,7 +307,7 @@ class _CapcHomeState extends State<_CapcHome> {
                 MediaQuery.textScalerOf(context).scale(1) < 1.5;
             return Row(
               children: [
-                _sidebar(wide),
+                if (!compact) _sidebar(wide),
                 Expanded(
                   child: Column(
                     children: [
@@ -317,6 +322,16 @@ class _CapcHomeState extends State<_CapcHome> {
                         ),
                         child: Row(
                           children: [
+                            if (compact)
+                              Builder(
+                                builder: (context) => IconButton(
+                                  tooltip: 'Abrir menú',
+                                  onPressed: _busy
+                                      ? null
+                                      : Scaffold.of(context).openDrawer,
+                                  icon: const Icon(Icons.menu),
+                                ),
+                              ),
                             Expanded(
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -342,8 +357,8 @@ class _CapcHomeState extends State<_CapcHome> {
                             ),
                             if (constraints.maxWidth > 780)
                               const _Tag(
-                                'Guardado en este equipo',
-                                icon: Icons.computer_outlined,
+                                'Guardado en este dispositivo',
+                                icon: Icons.offline_pin_outlined,
                               ),
                             const SizedBox(width: 8),
                             IconButton(
@@ -430,6 +445,71 @@ class _CapcHomeState extends State<_CapcHome> {
       ),
     );
   }
+
+  Widget _mobileDrawer() => Material(
+    color: _navy,
+    child: Column(
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(20, 24, 20, 16),
+          child: Row(
+            children: [
+              Icon(Icons.storefront_outlined, color: Colors.white),
+              SizedBox(width: 12),
+              Text(
+                'CAPC MULTISERVICIO',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            itemCount: _navigation.length,
+            itemBuilder: (context, index) =>
+                !_manager && [2, 5, 8, 10].contains(index)
+                ? const SizedBox.shrink()
+                : ListTile(
+                    key: ValueKey('navigation-${_navigation[index].$1}'),
+                    selected: _page == index,
+                    selectedTileColor: const Color(0xFF28465B),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    leading: Icon(
+                      _navigation[index].$2,
+                      color: _page == index
+                          ? const Color(0xFF74E0B6)
+                          : const Color(0xFFD5E0E8),
+                    ),
+                    title: Text(
+                      _navigation[index].$1,
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    onTap: _busy
+                        ? null
+                        : () {
+                            setState(() => _page = index);
+                            Navigator.pop(context);
+                          },
+                  ),
+          ),
+        ),
+        const Padding(
+          padding: EdgeInsets.all(20),
+          child: Text(
+            'Guardado en este dispositivo · Sin conexión al VPS',
+            style: TextStyle(color: Color(0xFFD5E0E8), fontSize: 12),
+          ),
+        ),
+      ],
+    ),
+  );
 
   Widget _sidebar(bool wide) {
     return Container(
@@ -1314,7 +1394,7 @@ class _CapcHomeState extends State<_CapcHome> {
         _dueAt = null;
       });
       await _refresh();
-      _notify('Venta ${saved!.number} guardada en este equipo.');
+      _notify('Venta ${saved!.number} guardada en este dispositivo.');
     });
     if (saved != null && mounted) await _showSale(saved!);
   }
@@ -2052,7 +2132,7 @@ class _CapcHomeState extends State<_CapcHome> {
     children: [
       _intro(
         'Configuración y respaldo',
-        'Esta primera versión trabaja con los datos guardados en tu computador.',
+        'Esta versión trabaja con los datos guardados en este dispositivo.',
       ),
       _section(
         'Tu espacio de trabajo',
@@ -2064,9 +2144,19 @@ class _CapcHomeState extends State<_CapcHome> {
             'Una empresa · Una caja local · Pesos colombianos',
           ),
           const SizedBox(height: 16),
+          FutureBuilder<DeviceSummary>(
+            future: _deviceSummary,
+            builder: (context, snapshot) => _Detail(
+              'Dispositivo',
+              snapshot.hasData
+                  ? '${snapshot.data!.platform} · ${snapshot.data!.description}'
+                  : appPlatform.platformLabel,
+            ),
+          ),
+          const SizedBox(height: 16),
           const _Notice(
             'Puedes vender sin internet. Esta versión todavía no comparte datos con otros equipos ni se conecta al VPS.',
-            icon: Icons.computer_outlined,
+            icon: Icons.offline_pin_outlined,
           ),
         ],
       ),
@@ -2074,8 +2164,10 @@ class _CapcHomeState extends State<_CapcHome> {
       _section(
         'Copia de seguridad',
         children: [
-          const Text(
-            'Guarda una copia de la base de datos en otra carpeta o en una memoria USB. Conserva varias copias con fecha.',
+          Text(
+            appPlatform.isAndroid
+                ? 'Exporta una copia mediante el selector de documentos de Android. Conserva varias copias con fecha fuera de la aplicación.'
+                : 'Guarda una copia de la base de datos en otra carpeta o en una memoria USB. Conserva varias copias con fecha.',
           ),
           const SizedBox(height: 16),
           if (_manager)
@@ -2086,7 +2178,7 @@ class _CapcHomeState extends State<_CapcHome> {
             ),
           const SizedBox(height: 16),
           const Text(
-            'Ubicación de los datos en este equipo',
+            'Ubicación privada de los datos en este dispositivo',
             style: TextStyle(color: _muted, fontSize: 12),
           ),
           const SizedBox(height: 6),
@@ -2136,14 +2228,18 @@ class _CapcHomeState extends State<_CapcHome> {
       const SizedBox(height: 20),
       _section(
         'Impresión',
-        children: const [
+        children: [
           Text(
-            'Abre una venta en Historial y elige Imprimir tirilla (80 mm), Imprimir carta o Guardar PDF. El diálogo de Windows permite seleccionar tu impresora instalada.',
+            appPlatform.isAndroid
+                ? 'Abre una venta en Historial para ver, guardar, compartir o imprimir el PDF mediante los diálogos de Android.'
+                : 'Abre una venta en Historial y elige Imprimir tirilla (80 mm), Imprimir carta o Guardar PDF. El diálogo de Windows permite seleccionar tu impresora instalada.',
           ),
-          SizedBox(height: 12),
+          const SizedBox(height: 12),
           Text(
-            'Los documentos son comprobantes internos sin validez fiscal. La compatibilidad de tu impresora USB debe comprobarse con su controlador instalado.',
-            style: TextStyle(color: _muted),
+            appPlatform.isAndroid
+                ? 'Los documentos son comprobantes internos sin validez fiscal. Android no accede directamente a la impresora USB conectada al computador y nunca envía documentos automáticamente.'
+                : 'Los documentos son comprobantes internos sin validez fiscal. La compatibilidad de tu impresora USB debe comprobarse con su controlador instalado.',
+            style: const TextStyle(color: _muted),
           ),
         ],
       ),
@@ -2153,39 +2249,33 @@ class _CapcHomeState extends State<_CapcHome> {
   Future<void> _backup() => _run(() async {
     final name =
         'CAPC-respaldo-${DateFormat('yyyyMMdd-HHmmss').format(_bogota(DateTime.now()))}.sqlite';
-    final target = await getSaveLocation(
+    final saved = await BackupTransfer.exportBackup(
+      widget.repository,
       suggestedName: name,
-      acceptedTypeGroups: const [
-        XTypeGroup(label: 'Base de datos SQLite', extensions: ['sqlite']),
-      ],
     );
-    if (target == null) return;
-    await widget.repository.backupTo(target.path);
+    if (saved == null) return;
     _notify('Copia de seguridad guardada.');
   });
 
   Future<void> _restore() => _run(() async {
-    final selected = await openFile(
-      acceptedTypeGroups: const [
-        XTypeGroup(
-          label: 'Respaldo SQLite',
-          extensions: ['sqlite', 'sqlite3', 'db'],
-        ),
-      ],
-    );
+    final selected = await BackupTransfer.prepareImport();
     if (selected == null || !mounted) return;
-    if (!await confirmAction(
-      context,
-      'Restaurar respaldo',
-      'Se validará el archivo y se reemplazarán los datos activos. Se conservará una copia de los datos actuales antes del cambio. Archivo: ${selected.path}',
-      action: 'Validar y restaurar',
-    )) {
-      return;
+    try {
+      if (!await confirmAction(
+        context,
+        'Restaurar respaldo',
+        'Se validará el archivo y se reemplazarán los datos activos. Se conservará una copia de los datos actuales antes del cambio. Archivo: ${selected.originalName}',
+        action: 'Validar y restaurar',
+      )) {
+        return;
+      }
+      final previous = await widget.repository.restoreFrom(selected.path);
+      if (!mounted) return;
+      _notify('Restauración completada. Copia previa: $previous');
+      widget.onLogout();
+    } finally {
+      await selected.dispose();
     }
-    final previous = await widget.repository.restoreFrom(selected.path);
-    if (!mounted) return;
-    _notify('Restauración completada. Copia previa: $previous');
-    widget.onLogout();
   });
 
   Future<void> _loadExamples() async {

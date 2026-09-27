@@ -1,25 +1,15 @@
-import 'dart:io';
-
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import 'data/repository.dart';
+import 'platform/platform_services.dart';
+import 'services/backup_transfer.dart';
 import 'ui/capc_app.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   String? databasePath;
   try {
-    // An explicit directory lets integration tests avoid the user's real data.
-    final override = Platform.environment['CAPC_DATA_DIR'];
-    final base = override == null || override.trim().isEmpty
-        ? await getApplicationSupportDirectory()
-        : Directory(override);
-    final directory = Directory(p.join(base.path, 'CAPC', 'local'));
-    await directory.create(recursive: true);
-    databasePath = p.join(directory.path, 'capc.sqlite3');
+    databasePath = await appPlatform.databasePath();
     final repository = await CapcRepository.open(databasePath);
     runApp(CapcApp(repository: repository));
   } catch (error) {
@@ -124,13 +114,8 @@ class _StartupFailureState extends State<_StartupFailure> {
                       onPressed: _busy
                           ? null
                           : () async {
-                              final file = await openFile(
-                                acceptedTypeGroups: const [
-                                  XTypeGroup(
-                                    label: 'Respaldo SQLite',
-                                    extensions: ['sqlite3', 'db', 'sqlite'],
-                                  ),
-                                ],
+                              final file = await appPlatform.openDocument(
+                                BackupTransfer.backupType,
                               );
                               if (file != null && mounted) {
                                 setState(() => _backupPath = file.path);

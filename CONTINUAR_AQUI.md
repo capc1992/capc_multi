@@ -1,6 +1,6 @@
 ﻿# Continuidad de CAPC MULTISERVICIO
 
-Actualizado el 25 de septiembre de 2026. Proyecto canónico: `C:\Users\CAPC\capc_multi`.
+Actualizado el 26 de septiembre de 2026. Proyecto canónico: `C:\Users\CAPC\capc_multi`.
 
 ## Alcance y autorización vigentes
 
@@ -27,6 +27,26 @@ No instalar Microsoft Build Tools: la autorización anterior fue retirada. El eq
 - Respaldo consistente, restauración con copia previa y recuperación de inicio con credenciales del respaldo.
 
 Las reglas y APIs vigentes están en `CONTRACT.md`. Los datos reales están fuera del ejecutable; Configuración muestra la ruta. Las pruebas usan bases temporales o memoria y no deben abrir la base del negocio.
+
+## Adaptación Android offline (`feature/android-offline`)
+
+- La rama comparte `CapcRepository`, esquema 2, migraciones, modelos, reglas, transacciones, identificadores y outbox entre Windows y Android. No se creó una segunda lógica de negocio.
+- `lib/platform/` concentra driver SQLite, ubicación privada, selección/exportación de documentos, impresión/compartir e información del dispositivo. El selector de sistema operativo está en un solo archivo; el repositorio ya no consulta `Platform.isWindows`.
+- Android usa `getApplicationSupportDirectory()/CAPC/local/capc.sqlite3`, `sqflite_common_ffi`/`sqlite3` y almacenamiento privado. No solicita acceso general a archivos.
+- Importación usa el selector de documentos. `MainActivity.kt` exporta respaldo, Excel, PDF y código de recuperación mediante `ACTION_CREATE_DOCUMENT`, cuya interfaz confirma reemplazos. Restauración materializa una copia temporal privada, valida y conserva la copia anterior con las reglas existentes.
+- PDF Carta y tirilla de 80 mm conservan vista previa, guardado e impresión. Android añade compartir mediante el panel del sistema. No accede a la impresora USB del computador ni envía documentos automáticamente.
+- La interfaz compacta usa menú móvil y muestra «Guardado en este dispositivo». No muestra «Sincronizado», no transmite la outbox y no conecta VPS/Firebase.
+- Documentación: `docs/ANDROID.md`.
+
+Verificación de esta rama:
+
+- `dart format --output=none --set-exit-if-changed lib test`: 41 archivos, sin cambios pendientes de formato.
+- `flutter analyze --no-pub`: sin observaciones.
+- `flutter test --no-pub --reporter expanded`: **160 pruebas aprobadas**. Las 3 nuevas comprueban adaptador Android, persistencia/reapertura, venta offline, idempotencia, stock, deuda, abonos, outbox, respaldo importado/exportado y navegación móvil; las pruebas anteriores conservan migración, compras, cotizaciones, caja, Excel, PDF y Windows.
+- `python tools/test_reset_owner_access.py`: **2 pruebas aprobadas**.
+- `flutter build windows --release --no-pub`: correcto; se generó `build/windows/x64/runner/Release/capc_multi.exe`. No se creó un paquete `dist` nuevo.
+- `flutter build apk --debug --no-pub`: bloqueado antes de compilar la aplicación. No existe un NDK instalado; Gradle requiere `28.2.13676358` y `sdkmanager.bat` termina con `-1073740791 (NTSTATUS 0xC0000409)`. No afirmar que existe un APK ni una prueba física Android hasta instalar/corregir esa herramienta y repetir la compilación.
+- No se abrió, copió ni modificó la base real del negocio. Todas las pruebas y respaldos de prueba usaron `:memory:` o directorios temporales.
 
 ## Excel y alta de cliente desde venta (0.3.0)
 

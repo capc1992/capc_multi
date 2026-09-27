@@ -1,8 +1,10 @@
 ﻿# CAPC MULTISERVICIO
 
-Aplicación Windows en español, Flutter y SQLite. Esta carpeta es el proyecto canónico; la plantilla anterior está archivada en `migration/flutter-template`.
+Aplicación Flutter en español con operación local SQLite. Windows `0.3.0` es la base estable; la rama Android comparte la misma lógica y prepara funcionamiento offline sin servidor. Esta carpeta es el proyecto canónico; la plantilla anterior está archivada en `migration/flutter-template`.
 
 Consulta [CONTINUAR_AQUI.md](CONTINUAR_AQUI.md) para resultados de verificación, [CONTRACT.md](CONTRACT.md) para reglas técnicas y [el plan](docs/plan-desarrollo-capc.md) para alcance y límites.
+
+La arquitectura y el estado comprobado de la adaptación móvil están en [Android offline](docs/ANDROID.md).
 
 ## Abrir
 
@@ -18,6 +20,14 @@ flutter run -d windows
 También: `powershell -ExecutionPolicy Bypass -File tools/windows.ps1 run`.
 
 El ejecutable compilado se ubica en `build/windows/x64/runner/Release/capc_multi.exe`. Distribuir la carpeta Release completa (DLL, fuentes, datos Flutter y SQLite), nunca solo el EXE. Consulta el estado real de compilación en CONTINUAR_AQUI.md.
+
+Para comprobar Android durante el desarrollo:
+
+```powershell
+flutter build apk --debug
+```
+
+La aplicación Android usa almacenamiento privado y el selector de documentos del sistema; no solicita acceso general a todos los archivos. Consulta `docs/ANDROID.md` antes de interpretar una compilación como una publicación o una prueba física terminada.
 
 ## Primer uso
 

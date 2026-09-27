@@ -1,14 +1,16 @@
-import 'dart:io';
-
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../data/repository.dart';
+import '../platform/platform_services.dart';
 import '../services/spreadsheets.dart';
 import 'ui_shared.dart';
 
-const excelFileType = XTypeGroup(label: 'Libro de Excel', extensions: ['xlsx']);
+const excelFileType = DocumentType(
+  label: 'Libro de Excel',
+  extensions: ['xlsx'],
+  mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+);
 
 Future<List<int>> buildProductTemplate() => compute(_templateBytes, null);
 List<int> _templateBytes(void _) => CapcSpreadsheets.productTemplate();
@@ -18,37 +20,25 @@ Future<void> saveExcelFile(
   required String name,
   required Future<List<int>> Function() build,
 }) async {
-  final destination = await getSaveLocation(
+  final saved = await appPlatform.saveDocument(
+    buildBytes: () async => Uint8List.fromList(await build()),
     suggestedName: '$name.xlsx',
-    acceptedTypeGroups: const [excelFileType],
-    confirmButtonText: 'Guardar Excel',
+    type: excelFileType,
+    confirmReplace: (path) async {
+      if (!context.mounted) return false;
+      return confirmAction(
+        context,
+        'Reemplazar archivo de Excel',
+        'Ya existe $path. ¿Quieres reemplazarlo?',
+        action: 'Reemplazar',
+      );
+    },
   );
-  if (destination == null) return;
-  final path = destination.path.toLowerCase().endsWith('.xlsx')
-      ? destination.path
-      : '${destination.path}.xlsx';
-  // The native picker only confirms the path it returned. If we append the
-  // extension, check that distinct final destination before replacing it.
-  if (path != destination.path && await File(path).exists()) {
-    if (!context.mounted) return;
-    final replace = await confirmAction(
-      context,
-      'Reemplazar archivo de Excel',
-      'Ya existe $path. ¿Quieres reemplazarlo?',
-      action: 'Reemplazar',
-    );
-    if (!replace) return;
-  }
-  final bytes = await build();
-  await XFile.fromData(
-    Uint8List.fromList(bytes),
-    mimeType:
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  ).saveTo(path);
+  if (saved == null) return;
   if (context.mounted) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('Excel guardado en $path')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Excel guardado en ${saved.displayLocation}')),
+    );
   }
 }
 
@@ -154,7 +144,7 @@ class _ProductImportDialogState extends State<ProductImportDialog> {
     if (_busy) return;
     setState(() => _busy = true);
     try {
-      final file = await openFile(acceptedTypeGroups: const [excelFileType]);
+      final file = await appPlatform.openDocument(excelFileType);
       if (file == null) return;
       if (mounted) {
         setState(() {
@@ -171,7 +161,7 @@ class _ProductImportDialogState extends State<ProductImportDialog> {
       }
       final preview = await compute(
         CapcSpreadsheets.parseProducts,
-        await file.readAsBytes(),
+        await file.readBytes(),
       );
       final existing = {
         for (final product in await widget.repository.listProducts())
