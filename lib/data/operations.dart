@@ -44,6 +44,7 @@ const _operationsSchema = <String>[
     updated_at TEXT NOT NULL, valid_until TEXT NOT NULL, conditions TEXT NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('draft','sent','accepted','rejected','expired','converted')),
     total INTEGER NOT NULL CHECK(total>=0), sale_id TEXT UNIQUE REFERENCES sales(id),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0),
     actor_id TEXT NOT NULL, operator_name TEXT NOT NULL)''',
   '''CREATE TABLE IF NOT EXISTS quote_lines (
     id TEXT PRIMARY KEY NOT NULL, quote_id TEXT NOT NULL REFERENCES quotes(id), position INTEGER NOT NULL,
@@ -585,7 +586,12 @@ extension CapcOperations on CapcRepository {
       await _enqueue(
         txn,
         'quote.created',
-        {'quoteId': id, 'request': jsonDecode(request)},
+        {
+          'quoteId': id,
+          'revision': 1,
+          'status': QuoteStatus.draft.name,
+          'request': jsonDecode(request),
+        },
         now,
         operationId: op,
       );
@@ -633,6 +639,15 @@ extension CapcOperations on CapcRepository {
         }
       }
       final now = CapcRepository._now();
+      final revision =
+          ((await txn.query(
+                'quotes',
+                columns: ['revision'],
+                where: 'id = ?',
+                whereArgs: [id],
+              )).single['revision']
+              as int) +
+          1;
       await txn.update(
         'quotes',
         {
@@ -641,6 +656,7 @@ extension CapcOperations on CapcRepository {
           'conditions': terms,
           'total': total,
           'updated_at': now,
+          'revision': revision,
         },
         where: 'id = ?',
         whereArgs: [id],
@@ -656,6 +672,7 @@ extension CapcOperations on CapcRepository {
         'description': desc,
         'validUntil': validUntil.toUtc().toIso8601String(),
         'conditions': terms,
+        'revision': revision,
         'items': items.map(_opsQuoteInput).toList(),
       }, now);
       return _getQuote(txn, id);
@@ -748,9 +765,18 @@ extension CapcOperations on CapcRepository {
         }
       }
       final now = CapcRepository._now();
+      final revision =
+          ((await txn.query(
+                'quotes',
+                columns: ['revision'],
+                where: 'id = ?',
+                whereArgs: [id],
+              )).single['revision']
+              as int) +
+          1;
       await txn.update(
         'quotes',
-        {'status': status.name, 'updated_at': now},
+        {'status': status.name, 'updated_at': now, 'revision': revision},
         where: 'id = ?',
         whereArgs: [id],
       );
@@ -761,6 +787,7 @@ extension CapcOperations on CapcRepository {
       await _enqueue(txn, 'quote.status', {
         'quoteId': id,
         'status': status.name,
+        'revision': revision,
       }, now);
     });
   });
@@ -865,12 +892,22 @@ extension CapcOperations on CapcRepository {
         sourceQuoteId: id,
       );
       final now = CapcRepository._now();
+      final revision =
+          ((await txn.query(
+                'quotes',
+                columns: ['revision'],
+                where: 'id = ?',
+                whereArgs: [id],
+              )).single['revision']
+              as int) +
+          1;
       await txn.update(
         'quotes',
         {
           'sale_id': sale.id,
           'status': QuoteStatus.converted.name,
           'updated_at': now,
+          'revision': revision,
         },
         where: 'id = ?',
         whereArgs: [id],
@@ -892,7 +929,13 @@ extension CapcOperations on CapcRepository {
       await _enqueue(
         txn,
         'quote.converted',
-        {'quoteId': id, 'saleId': sale.id, 'prepaid': prepaid},
+        {
+          'quoteId': id,
+          'saleId': sale.id,
+          'prepaid': prepaid,
+          'status': QuoteStatus.converted.name,
+          'revision': revision,
+        },
         now,
         operationId: op,
       );

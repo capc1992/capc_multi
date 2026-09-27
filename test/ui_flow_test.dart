@@ -3,6 +3,8 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:capc_multiservicio/data/repository.dart';
+import 'package:capc_multiservicio/platform/platform_android.dart';
+import 'package:capc_multiservicio/platform/platform_services.dart';
 import 'package:capc_multiservicio/ui/capc_app.dart';
 import 'package:capc_multiservicio/ui/line_editor.dart';
 import 'package:capc_multiservicio/ui/ui_shared.dart';
@@ -718,6 +720,37 @@ void main() {
     await dialogFrames(tester);
     await tester.tap(find.widgetWithText(TextButton, 'Cancelar'));
     await databaseFrames(tester);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Android compacto usa navegación móvil y comunica estado local', (
+    tester,
+  ) async {
+    platformServicesOverride = AndroidPlatformServices();
+    addTearDown(() => platformServicesOverride = null);
+    final repository = await openTestApp(tester, const Size(390, 844));
+    addTearDown(repository.close);
+
+    expect(find.byTooltip('Abrir menú'), findsOneWidget);
+    await tester.tap(find.byTooltip('Abrir menú'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Guardado en este dispositivo'), findsOneWidget);
+
+    final settings = find.byKey(const ValueKey('navigation-Configuración'));
+    await tester.ensureVisible(settings);
+    await tester.tap(settings);
+    await databaseFrames(tester);
+
+    expect(
+      tester.widget<Text>(find.byKey(const Key('page-title'))).data,
+      'Configuración',
+    );
+    expect(
+      find.textContaining('selector de documentos de Android'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('ni se conecta al VPS'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });

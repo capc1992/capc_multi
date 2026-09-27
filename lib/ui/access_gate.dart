@@ -91,16 +91,21 @@ class _AccessState extends State<CapcAccessGate> {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        const Icon(
-                          Icons.storefront_outlined,
-                          size: 42,
-                          color: Color(0xFF087F5B),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'CAPC MULTISERVICIO',
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.titleLarge,
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 24,
+                            vertical: 16,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF142638),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Image.asset(
+                            'assets/branding/capc_logo_horizontal.png',
+                            height: 76,
+                            fit: BoxFit.contain,
+                            semanticLabel: 'CAPC MULTISERVICIO',
+                          ),
                         ),
                         const SizedBox(height: 20),
                         Text(
