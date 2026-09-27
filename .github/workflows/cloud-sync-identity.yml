@@ -1,0 +1,92 @@
+name: Cloud Sync Identity
+
+on:
+  push:
+    branches: [feature/cloud-sync-identity]
+  pull_request:
+    branches: [feature/cloud-sync-identity]
+
+permissions:
+  contents: read
+
+jobs:
+  server-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: capc_sync
+          POSTGRES_PASSWORD: integration_password
+          POSTGRES_DB: capc_sync_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U capc_sync -d capc_sync_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        working-directory: server
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://capc_sync:integration_password@127.0.0.1:5432/capc_sync_test
+      AUTH_TOKEN_PEPPER: integration-test-pepper-at-least-32-characters
+      LOG_LEVEL: silent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run check
+      - run: npm run migrate
+      - run: npm run migrate
+      - run: npm run test:postgres
+      - run: npm run migrate:rollback
+      - run: npm run migrate:verify-rollback
+      - run: npm run migrate
+      - run: npm test
+      - run: npm run build
+
+  flutter-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed lib test
+      - run: flutter analyze --no-pub
+      - run: flutter test --no-pub
+      - run: python -m unittest discover -s tools -p "test_*.py"
+      - run: flutter build apk --debug --no-pub
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capc-android-debug
+          path: build/app/outputs/flutter-apk/app-debug.apk
+
+  flutter-windows-package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build windows --release --no-pub
+      - shell: pwsh
+        run: ./tools/package-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capc-windows-portable
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256

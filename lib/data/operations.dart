@@ -18,7 +18,8 @@ const _operationsSchema = <String>[
   '''CREATE TABLE IF NOT EXISTS suppliers (
     id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL,
     name TEXT NOT NULL, phone TEXT NOT NULL, document TEXT NOT NULL,
-    address TEXT NOT NULL, updated_at TEXT NOT NULL)''',
+    address TEXT NOT NULL, updated_at TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0))''',
   '''CREATE TABLE IF NOT EXISTS purchases (
     id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
     number TEXT NOT NULL UNIQUE, supplier_id TEXT NOT NULL REFERENCES suppliers(id),
@@ -57,7 +58,8 @@ const _operationsSchema = <String>[
     customer_name TEXT NOT NULL, description TEXT NOT NULL, created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('received','inProgress','ready','delivered')),
     responsible TEXT NOT NULL, delivery_at TEXT NOT NULL,
-    quote_id TEXT UNIQUE REFERENCES quotes(id), sale_id TEXT REFERENCES sales(id), actor_id TEXT NOT NULL)''',
+    quote_id TEXT UNIQUE REFERENCES quotes(id), sale_id TEXT REFERENCES sales(id), actor_id TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0))''',
   '''CREATE TABLE IF NOT EXISTS work_advances (
     id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
     work_id TEXT NOT NULL REFERENCES work_orders(id), amount INTEGER NOT NULL CHECK(amount>0),
@@ -111,6 +113,9 @@ extension CapcOperations on CapcRepository {
         throw const CapcException('El proveedor no pertenece a este negocio.');
       }
       final now = CapcRepository._now();
+      final revision = current.isEmpty
+          ? 1
+          : (current.single['revision'] as int) + 1;
       final record = <String, Object?>{
         'id': id,
         'business_id': businessId,
@@ -119,6 +124,7 @@ extension CapcOperations on CapcRepository {
         'document': document,
         'address': address,
         'updated_at': now,
+        'revision': revision,
       };
       if (current.isEmpty) {
         await txn.insert('suppliers', record);
@@ -258,7 +264,31 @@ extension CapcOperations on CapcRepository {
       await _enqueue(
         txn,
         'purchase.created',
-        {'purchaseId': id, 'request': jsonDecode(request)},
+        {
+          'purchaseId': id,
+          'request': jsonDecode(request),
+          'purchase': (await txn.query(
+            'purchases',
+            where: 'id = ?',
+            whereArgs: [id],
+          )).single,
+          'purchaseLines': await txn.query(
+            'purchase_lines',
+            where: 'purchase_id = ?',
+            whereArgs: [id],
+            orderBy: 'position',
+          ),
+          'payments': await txn.query(
+            'supplier_payments',
+            where: 'purchase_id = ?',
+            whereArgs: [id],
+          ),
+          'cashMovements': await txn.query(
+            'cash_movements',
+            where: 'reference_id = ? AND created_at = ?',
+            whereArgs: [id, now],
+          ),
+        },
         now,
         operationId: op,
       );
@@ -334,7 +364,15 @@ extension CapcOperations on CapcRepository {
         await _enqueue(
           txn,
           'purchase.received',
-          {'purchaseId': id},
+          {
+            'purchaseId': id,
+            'receivedAt': now,
+            'stockMovements': await txn.query(
+              'stock_movements',
+              where: 'reference_id = ?',
+              whereArgs: [id],
+            ),
+          },
           now,
           operationId: op,
         );
@@ -405,6 +443,16 @@ extension CapcOperations on CapcRepository {
           'paymentId': payment,
           'amount': amount,
           'method': paymentMethod,
+          'payment': (await txn.query(
+            'supplier_payments',
+            where: 'id = ?',
+            whereArgs: [payment],
+          )).single,
+          'cashMovement': (await txn.query(
+            'cash_movements',
+            where: 'reference_id = ? AND created_at = ?',
+            whereArgs: [id, now],
+          )).single,
         },
         now,
         operationId: op,
@@ -591,6 +639,17 @@ extension CapcOperations on CapcRepository {
           'revision': 1,
           'status': QuoteStatus.draft.name,
           'request': jsonDecode(request),
+          'quote': (await txn.query(
+            'quotes',
+            where: 'id = ?',
+            whereArgs: [id],
+          )).single,
+          'quoteLines': await txn.query(
+            'quote_lines',
+            where: 'quote_id = ?',
+            whereArgs: [id],
+            orderBy: 'position',
+          ),
         },
         now,
         operationId: op,
@@ -674,6 +733,17 @@ extension CapcOperations on CapcRepository {
         'conditions': terms,
         'revision': revision,
         'items': items.map(_opsQuoteInput).toList(),
+        'quote': (await txn.query(
+          'quotes',
+          where: 'id = ?',
+          whereArgs: [id],
+        )).single,
+        'quoteLines': await txn.query(
+          'quote_lines',
+          where: 'quote_id = ?',
+          whereArgs: [id],
+          orderBy: 'position',
+        ),
       }, now);
       return _getQuote(txn, id);
     });
@@ -788,6 +858,11 @@ extension CapcOperations on CapcRepository {
         'quoteId': id,
         'status': status.name,
         'revision': revision,
+        'quote': (await txn.query(
+          'quotes',
+          where: 'id = ?',
+          whereArgs: [id],
+        )).single,
       }, now);
     });
   });
@@ -935,6 +1010,11 @@ extension CapcOperations on CapcRepository {
           'prepaid': prepaid,
           'status': QuoteStatus.converted.name,
           'revision': revision,
+          'quote': (await txn.query(
+            'quotes',
+            where: 'id = ?',
+            whereArgs: [id],
+          )).single,
         },
         now,
         operationId: op,
@@ -1121,6 +1201,7 @@ extension CapcOperations on CapcRepository {
         'quote_id': quote,
         'sale_id': saleId,
         'actor_id': actor.id,
+        'revision': 1,
       });
       await _recordOperation(txn, op, 'work.create', request, id, now);
       await _audit(txn, 'work.created', id, {
@@ -1130,7 +1211,16 @@ extension CapcOperations on CapcRepository {
       await _enqueue(
         txn,
         'work.created',
-        {'workId': id, 'request': jsonDecode(request)},
+        {
+          'workId': id,
+          'request': jsonDecode(request),
+          'work': (await txn.query(
+            'work_orders',
+            where: 'id = ?',
+            whereArgs: [id],
+          )).single,
+          'revision': 1,
+        },
         now,
         operationId: op,
       );
@@ -1184,6 +1274,15 @@ extension CapcOperations on CapcRepository {
         'responsible': person,
         'delivery_at': deliveryAt.toUtc().toIso8601String(),
         'updated_at': now,
+        'revision':
+            ((await txn.query(
+                  'work_orders',
+                  columns: ['revision'],
+                  where: 'id = ?',
+                  whereArgs: [id],
+                )).single['revision']
+                as int) +
+            1,
       };
       await txn.update(
         'work_orders',
@@ -1195,7 +1294,15 @@ extension CapcOperations on CapcRepository {
         'previousStatus': work.status.name,
         ...changes,
       }, now);
-      await _enqueue(txn, 'work.updated', {'workId': id, ...changes}, now);
+      await _enqueue(txn, 'work.updated', {
+        'workId': id,
+        ...changes,
+        'work': (await txn.query(
+          'work_orders',
+          where: 'id = ?',
+          whereArgs: [id],
+        )).single,
+      }, now);
     });
   });
 
@@ -1294,7 +1401,20 @@ extension CapcOperations on CapcRepository {
         'method': paymentMethod,
         'received': moneyReceived,
       }, now);
-      await _enqueue(txn, 'work.advance', record, now, operationId: op);
+      await _enqueue(
+        txn,
+        'work.advance',
+        {
+          'advance': record,
+          'cashMovement': (await txn.query(
+            'cash_movements',
+            where: 'reference_id = ? AND created_at = ?',
+            whereArgs: [advance, now],
+          )).single,
+        },
+        now,
+        operationId: op,
+      );
       return _advanceFromRow(record);
     });
   });
@@ -1359,7 +1479,17 @@ extension CapcOperations on CapcRepository {
         await _enqueue(
           txn,
           'work.advanceApplied',
-          {'workId': id, 'saleId': sale, 'amount': work.unappliedAdvances},
+          {
+            'workId': id,
+            'saleId': sale,
+            'amount': work.unappliedAdvances,
+            'advanceIds': (await txn.query(
+              'work_advances',
+              columns: ['id'],
+              where: 'work_id = ? AND sale_id = ?',
+              whereArgs: [id, sale],
+            )).map((row) => row['id']).toList(),
+          },
           now,
           operationId: op,
         );

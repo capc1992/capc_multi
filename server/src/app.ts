@@ -1,85 +1,203 @@
-import { timingSafeEqual } from 'node:crypto';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import { z, ZodError } from 'zod';
 
-import Fastify, { type FastifyInstance } from 'fastify';
-import { ZodError } from 'zod';
-
+import { IdentityError, requirePermission, type AuthIdentity, type IdentityStore, type IssuedIdentity } from './identity.js';
 import { PullQuerySchema, PushSchema } from './protocol.js';
 import { IdempotencyConflictError, type SyncStore } from './store.js';
 
 interface BuildAppOptions {
   store: SyncStore;
-  sharedSecret: string;
+  identityStore: IdentityStore;
   logger?: boolean | { level: string; redact: string[] };
 }
 
+const DeviceSchema = z.object({
+  device_id: z.string().uuid(),
+  device_name: z.string().trim().min(1).max(160),
+  platform: z.string().trim().min(1).max(40),
+});
+const CreateBusinessSchema = DeviceSchema.extend({
+  business_id: z.string().uuid(),
+  business_name: z.string().trim().min(1).max(160),
+  email: z.email().max(320),
+  password: z.string().min(12).max(200),
+}).strict();
+const LoginSchema = z.object({
+  business_id: z.string().uuid(),
+  email: z.email().max(320),
+  password: z.string().min(1).max(200),
+  device_id: z.string().uuid(),
+}).strict();
+const RefreshSchema = z.object({ refresh_token: z.string().min(32).max(512), device_id: z.string().uuid() }).strict();
+const LinkSchema = DeviceSchema.extend({
+  code: z.string().trim().min(6).max(32).transform((value) => value.toUpperCase()),
+  local_business_id: z.string().uuid(),
+  local_state: z.enum(['new', 'no_movements']),
+}).strict();
+const DeviceParamsSchema = z.object({ deviceId: z.string().uuid() });
+const publicIdentityRoutes = new Set([
+  '/api/v1/identity/businesses',
+  '/api/v1/identity/login',
+  '/api/v1/identity/refresh',
+  '/api/v1/identity/link',
+]);
+
 export function buildApp(options: BuildAppOptions): FastifyInstance {
+  const identities = new WeakMap<FastifyRequest, AuthIdentity>();
   const app = Fastify({
-    logger:
-      options.logger ??
-      {
-        level: 'info',
-        redact: [
-          'req.headers.authorization',
-          'req.headers.cookie',
-          'res.headers.set-cookie',
-        ],
+    logger: options.logger ?? {
+      level: 'info',
+      redact: [
+        'req.headers.authorization',
+        'req.headers.cookie',
+        'req.headers.x-business-id',
+        'res.headers.set-cookie',
+      ],
     },
     bodyLimit: 1024 * 1024,
   });
 
-  app.get('/health', async () => ({ status: 'ok', service: 'capc-sync', version: 1 }));
+  app.get('/health', async () => ({ status: 'ok', service: 'capc-sync', version: 2 }));
 
   app.addHook('preHandler', async (request, reply) => {
-    if (!request.url.startsWith('/api/')) return;
+    const path = request.url.split('?')[0]!;
+    if (!path.startsWith('/api/') || publicIdentityRoutes.has(path)) return;
     const authorization = request.headers.authorization;
-    const supplied = authorization?.startsWith('Bearer ') ? authorization.slice(7) : '';
-    if (!safeEqual(supplied, options.sharedSecret)) {
-      await reply.code(401).send({ error: 'unauthorized' });
-    }
+    const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : '';
+    const identity = token ? await options.identityStore.authenticate(token) : null;
+    if (!identity) return reply.code(401).send({ error: 'unauthorized' });
+    identities.set(request, identity);
+  });
+
+  app.post('/api/v1/identity/businesses', async (request, reply) => {
+    const body = CreateBusinessSchema.parse(request.body);
+    const issued = await options.identityStore.createBusiness({
+      businessId: body.business_id,
+      businessName: body.business_name,
+      email: body.email,
+      password: body.password,
+      deviceId: body.device_id,
+      deviceName: body.device_name,
+      platform: body.platform,
+    }, requestKey(request));
+    return reply.code(201).send(tokenResponse(issued));
+  });
+
+  app.post('/api/v1/identity/login', async (request) => {
+    const body = LoginSchema.parse(request.body);
+    return tokenResponse(await options.identityStore.login({
+      businessId: body.business_id,
+      email: body.email,
+      password: body.password,
+      deviceId: body.device_id,
+    }, requestKey(request)));
+  });
+
+  app.post('/api/v1/identity/refresh', async (request) => {
+    const body = RefreshSchema.parse(request.body);
+    return tokenResponse(await options.identityStore.refresh(body.refresh_token, body.device_id, requestKey(request)));
+  });
+
+  app.post('/api/v1/identity/link', async (request) => {
+    const body = LinkSchema.parse(request.body);
+    return tokenResponse(await options.identityStore.linkDevice({
+      code: body.code,
+      deviceId: body.device_id,
+      deviceName: body.device_name,
+      platform: body.platform,
+      localBusinessId: body.local_business_id,
+      localState: body.local_state,
+    }, requestKey(request)));
+  });
+
+  app.post('/api/v1/identity/link-codes', async (request, reply) => {
+    const identity = authenticated(identities, request);
+    requirePermission(identity, 'devices:manage');
+    enforceScope(request, identity);
+    return reply.code(201).send(await options.identityStore.createLinkCode(identity));
+  });
+
+  app.get('/api/v1/identity/devices', async (request) => {
+    const identity = authenticated(identities, request);
+    requirePermission(identity, 'devices:read');
+    enforceScope(request, identity);
+    return { devices: await options.identityStore.listDevices(identity) };
+  });
+
+  app.delete('/api/v1/identity/devices/:deviceId', async (request, reply) => {
+    const identity = authenticated(identities, request);
+    requirePermission(identity, 'devices:manage');
+    enforceScope(request, identity);
+    const { deviceId } = DeviceParamsSchema.parse(request.params);
+    await options.identityStore.revokeDevice(identity, deviceId);
+    return reply.code(204).send();
+  });
+
+  app.post('/api/v1/identity/logout', async (request, reply) => {
+    const identity = authenticated(identities, request);
+    enforceScope(request, identity);
+    await options.identityStore.logout(identity);
+    return reply.code(204).send();
   });
 
   app.post('/api/v1/sync/push', async (request, reply) => {
+    const identity = authenticated(identities, request);
+    requirePermission(identity, 'sync:write');
+    enforceScope(request, identity);
     const payload = PushSchema.parse(request.body);
-    const scope = request.headers['x-business-id'];
-    if (typeof scope !== 'string' || payload.operations.some((item) => item.business_id !== scope)) {
-      return reply.code(403).send({ error: 'business_scope_mismatch' });
+    if (payload.operations.some((item) => item.business_id !== identity.businessId || item.device_id !== identity.deviceId)) {
+      return reply.code(403).send({ error: 'identity_scope_mismatch' });
     }
     const accepted = [];
-    for (const operation of payload.operations) {
-      accepted.push(await options.store.push(operation));
-    }
+    for (const operation of payload.operations) accepted.push(await options.store.push(operation));
     return { accepted };
   });
 
   app.get('/api/v1/sync/pull', async (request, reply) => {
+    const identity = authenticated(identities, request);
+    requirePermission(identity, 'sync:read');
+    enforceScope(request, identity);
     const query = PullQuerySchema.parse(request.query);
-    const scope = request.headers['x-business-id'];
-    if (typeof scope !== 'string' || query.business_id !== scope) {
-      return reply.code(403).send({ error: 'business_scope_mismatch' });
+    if (query.business_id !== identity.businessId || query.device_id !== identity.deviceId) {
+      return reply.code(403).send({ error: 'identity_scope_mismatch' });
     }
-    return options.store.pull(query.business_id, query.after, query.limit);
+    return options.store.pull(identity.businessId, query.after, query.limit);
   });
 
   app.setErrorHandler(async (error, _request, reply) => {
-    if (error instanceof ZodError) {
-      return reply.code(400).send({ error: 'invalid_request', issues: error.issues });
-    }
-    if (error instanceof IdempotencyConflictError) {
-      return reply.code(409).send({ error: 'operation_id_conflict' });
-    }
-    const safeError = error instanceof Error
-      ? { name: error.name, message: error.message }
-      : { name: 'UnknownError', message: 'Unknown server failure' };
-    app.log.error({ err: safeError }, 'request_failed');
+    if (error instanceof ZodError) return reply.code(400).send({ error: 'invalid_request', issues: error.issues });
+    if (error instanceof IdentityError) return reply.code(error.statusCode).send({ error: error.code });
+    if (error instanceof IdempotencyConflictError) return reply.code(409).send({ error: 'operation_id_conflict' });
+    app.log.error({ error_type: error instanceof Error ? error.name : 'UnknownError' }, 'request_failed');
     return reply.code(500).send({ error: 'internal_error' });
   });
 
-  app.addHook('onClose', async () => options.store.close());
+  app.addHook('onClose', async () => Promise.all([options.store.close(), options.identityStore.close()]));
   return app;
 }
 
-function safeEqual(left: string, right: string): boolean {
-  const a = Buffer.from(left);
-  const b = Buffer.from(right);
-  return a.length === b.length && timingSafeEqual(a, b);
+function authenticated(identities: WeakMap<FastifyRequest, AuthIdentity>, request: FastifyRequest): AuthIdentity {
+  const identity = identities.get(request);
+  if (!identity) throw new IdentityError('unauthorized', 401);
+  return identity;
+}
+
+function enforceScope(request: FastifyRequest, identity: AuthIdentity): void {
+  if (request.headers['x-business-id'] !== identity.businessId) throw new IdentityError('business_scope_mismatch', 403);
+}
+
+function requestKey(request: FastifyRequest): string {
+  return request.ip || 'unknown';
+}
+
+function tokenResponse(value: IssuedIdentity): Record<string, unknown> {
+  return {
+    business_id: value.businessId,
+    device_id: value.deviceId,
+    permissions: value.permissions,
+    access_token: value.accessToken,
+    refresh_token: value.refreshToken,
+    access_expires_at: value.accessExpiresAt,
+    refresh_expires_at: value.refreshExpiresAt,
+  };
 }

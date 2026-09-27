@@ -10,6 +10,10 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:postgres": "vitest run test/postgres.integration.test.ts",
+    "migrate": "tsx src/migrate.ts up",
+    "migrate:rollback": "tsx src/migrate.ts down",
+    "migrate:verify-rollback": "tsx src/verify_rollback.ts",
     "start": "node dist/src/main.js",
     "dev": "tsx watch src/main.ts"
   },

@@ -17,6 +17,8 @@ part 'operations.dart';
 part 'recovery.dart';
 part '../sync/local_sync_store.dart';
 
+enum RemoteLinkState { newInstallation, noMovements, hasBusinessMovements }
+
 /// All interactive writes stay transactional and local. Remote exchange is
 /// delegated to the optional sync engine and never blocks offline operation.
 class CapcRepository {
@@ -30,7 +32,7 @@ class CapcRepository {
   static const _maxMoney = 999999999999;
   static const _maxQuantity = 1000000000;
   static const _maxMicros = 9000000000000000000;
-  static const _schemaVersion = 3;
+  static const _schemaVersion = 4;
   static const _applicationId = 1128353859;
   static final _passwordAlgorithm = Argon2id(
     memory: 19456,
@@ -129,6 +131,10 @@ class CapcRepository {
           if (current == 2) {
             await _migrateV2ToV3(db);
             current = 3;
+          }
+          if (current == 3) {
+            await _migrateV3ToV4(db);
+            current = 4;
           }
           if (current != newVersion) {
             throw const CapcException('Versión de datos no compatible.');
@@ -1444,6 +1450,11 @@ class CapcRepository {
         'consumptions': consumptionRecords,
         'payments': paymentRecords,
         'stockMovements': movementRecords,
+        'cashMovements': await txn.query(
+          'cash_movements',
+          where: 'reference_id = ? AND created_at = ?',
+          whereArgs: [saleId, now],
+        ),
       },
       now,
       operationId: opId,
@@ -1524,6 +1535,11 @@ class CapcRepository {
             'payments',
             where: 'id = ?',
             whereArgs: [paymentId],
+          )).single,
+          'cashMovement': (await txn.query(
+            'cash_movements',
+            where: 'reference_id = ? AND created_at = ?',
+            whereArgs: [id, now],
           )).single,
         },
         now,
@@ -1907,6 +1923,26 @@ class CapcRepository {
           'refund': refund,
           'costReversedMicros': recovered,
           'lines': details,
+          'return': (await txn.query(
+            'sale_returns',
+            where: 'id = ?',
+            whereArgs: [returnId],
+          )).single,
+          'stockMovements': await txn.query(
+            'stock_movements',
+            where: 'reference_id = ?',
+            whereArgs: [returnId],
+          ),
+          'refundPayments': await txn.query(
+            'payments',
+            where: "sale_id = ? AND created_at = ? AND kind = 'Reintegro'",
+            whereArgs: [id, now],
+          ),
+          'cashMovements': await txn.query(
+            'cash_movements',
+            where: 'reference_id = ? AND created_at = ?',
+            whereArgs: [returnId, now],
+          ),
         },
         now,
         operationId: opId,
@@ -2048,7 +2084,15 @@ class CapcRepository {
           await _enqueue(
             txn,
             'cash.opened',
-            {'id': id, 'openingAmount': openingAmount},
+            {
+              'id': id,
+              'openingAmount': openingAmount,
+              'session': (await txn.query(
+                'cash_sessions',
+                where: 'id = ?',
+                whereArgs: [id],
+              )).single,
+            },
             now,
             operationId: opId,
           );
@@ -2127,7 +2171,16 @@ class CapcRepository {
       await _enqueue(
         txn,
         'cash.closed',
-        {'id': row['id'], 'expected': expected, 'counted': countedAmount},
+        {
+          'id': row['id'],
+          'expected': expected,
+          'counted': countedAmount,
+          'session': (await txn.query(
+            'cash_sessions',
+            where: 'id = ?',
+            whereArgs: [row['id']],
+          )).single,
+        },
         now,
         operationId: opId,
       );
@@ -2269,6 +2322,17 @@ class CapcRepository {
           'amount': amount,
           'method': paymentMethod,
           'reason': explanation,
+          'cashMovement': (await txn.query(
+            'cash_movements',
+            where: 'reference_id = ? AND created_at = ?',
+            whereArgs: [id, now],
+          )).single,
+          if (expense)
+            'expense': (await txn.query(
+              'expenses',
+              where: 'id = ?',
+              whereArgs: [id],
+            )).single,
         },
         now,
         operationId: opId,
@@ -3243,6 +3307,95 @@ class CapcRepository {
     });
   }
 
+  Future<RemoteLinkState> remoteLinkState() => _run(() async {
+    const movementTables = [
+      'sales',
+      'payments',
+      'stock_movements',
+      'sale_returns',
+      'cash_sessions',
+      'cash_movements',
+      'expenses',
+      'purchases',
+      'supplier_payments',
+      'quotes',
+      'work_orders',
+      'work_advances',
+    ];
+    for (final table in movementTables) {
+      final rows = await _db.rawQuery(
+        'SELECT 1 FROM $table WHERE business_id=? LIMIT 1',
+        [businessId],
+      );
+      if (rows.isNotEmpty) return RemoteLinkState.hasBusinessMovements;
+    }
+    for (final table in ['products', 'customers', 'suppliers']) {
+      final rows = await _db.rawQuery(
+        'SELECT 1 FROM $table WHERE business_id=? LIMIT 1',
+        [businessId],
+      );
+      if (rows.isNotEmpty) return RemoteLinkState.noMovements;
+    }
+    return RemoteLinkState.newInstallation;
+  });
+
+  Future<void> adoptRemoteBusinessId(String remoteBusinessId) => _run(() async {
+    final remote = _id(remoteBusinessId);
+    if (remote == businessId) return;
+    if (await remoteLinkState() == RemoteLinkState.hasBusinessMovements) {
+      throw const CapcException(
+        'La base local contiene movimientos. Haz un respaldo y usa una migración explícita; no se mezclarán negocios.',
+      );
+    }
+    final previous = businessId;
+    await _db.transaction((txn) async {
+      final tables = await txn.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+      );
+      for (final tableRow in tables) {
+        final table = tableRow['name'] as String;
+        final columns = await txn.rawQuery('PRAGMA table_info("$table")');
+        if (columns.any((column) => column['name'] == 'business_id')) {
+          await txn.rawUpdate(
+            'UPDATE "$table" SET business_id=? WHERE business_id=?',
+            [remote, previous],
+          );
+        }
+      }
+      for (final target in [
+        ('outbox', 'payload'),
+        ('inbox', 'payload'),
+        ('operations', 'request'),
+      ]) {
+        final columns = await txn.rawQuery('PRAGMA table_info("${target.$1}")');
+        if (columns.any((column) => column['name'] == target.$2)) {
+          await txn.rawUpdate(
+            'UPDATE "${target.$1}" SET "${target.$2}"=replace("${target.$2}",?,?)',
+            [previous, remote],
+          );
+        }
+      }
+      await txn.update(
+        'settings',
+        {'value': remote},
+        where: 'key = ?',
+        whereArgs: ['business_id'],
+      );
+      await txn.insert('audit', {
+        'id': _uuid.v4(),
+        'action': 'remote.business_adopted',
+        'entity_id': remote,
+        'actor_id': _actor.id,
+        'actor_name': _actor.name,
+        'created_at': _now(),
+        'details': jsonEncode({'previousBusinessId': previous}),
+        'business_id': remote,
+        'device_id': deviceId,
+      });
+    });
+    _businessId = remote;
+  });
+
   Future<void> _enqueue(
     DatabaseExecutor db,
     String kind,
@@ -3534,6 +3687,21 @@ class CapcRepository {
         'cursor': 0,
         'status': pending == 0 ? 'local_only' : 'pending',
       }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+
+  static Future<void> _migrateV3ToV4(DatabaseExecutor db) async {
+    final supplierColumns = await db.rawQuery('PRAGMA table_info(suppliers)');
+    if (!supplierColumns.any((column) => column['name'] == 'revision')) {
+      await db.execute(
+        'ALTER TABLE suppliers ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0)',
+      );
+    }
+    final workColumns = await db.rawQuery('PRAGMA table_info(work_orders)');
+    if (!workColumns.any((column) => column['name'] == 'revision')) {
+      await db.execute(
+        'ALTER TABLE work_orders ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0)',
+      );
     }
   }
 

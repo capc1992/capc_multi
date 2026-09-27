@@ -1,0 +1,11 @@
+BEGIN;
+DROP TABLE IF EXISTS auth_attempts;
+DROP TABLE IF EXISTS security_audit;
+DROP TABLE IF EXISTS token_revocations;
+DROP TABLE IF EXISTS linking_codes;
+DROP TABLE IF EXISTS refresh_tokens;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS devices;
+DROP TABLE IF EXISTS remote_owners;
+DROP TABLE IF EXISTS businesses;
+COMMIT;

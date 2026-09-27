@@ -1,14 +1,39 @@
-# Protocolo de sincronización CAPC v1
+# Protocolo de sincronización CAPC v2
 
-## Propósito y límites
+## Principios
 
-Windows y Android conservan su SQLite privado como fuente de verdad durante la operación. Guardar una venta, pago, movimiento, compra o gasto no depende de internet: la mutación local y su evento de outbox se confirman en la misma transacción. La API central nunca conecta un dispositivo directamente con otro; almacena eventos por negocio en PostgreSQL y los distribuye mediante un cursor monotónico.
+Windows y Android conservan SQLite privado como fuente operativa. Guardar ventas, pagos, inventario, compras, devoluciones, caja, gastos, cotizaciones, trabajos o anticipos no depende de internet: la mutación y su outbox se confirman en la misma transacción. PostgreSQL distribuye eventos por negocio mediante un cursor monotónico; ningún dispositivo conecta directamente con otro.
 
-Esta base no despliega el VPS ni activa sincronización en una instalación existente. Sin `CAPC_SYNC_URL`, el motor permanece en `local_only` y no abre conexiones. La autenticación remota definitiva y el almacenamiento seguro de sus tokens quedan para la siguiente etapa.
+Sin `CAPC_SYNC_URL`, el motor queda en `local_only`, la interfaz indica operación offline y no abre conexiones. La dirección `https://api.capcmultiservicios.site` está preparada como referencia, pero no está incorporada a compilaciones normales.
+
+## Identidad remota
+
+La identidad local y la remota son independientes. Nunca se transmiten usuarios, contraseñas, sales/hashes locales, sesiones locales ni códigos de recuperación offline.
+
+El primer equipo crea el negocio remoto usando su `business_id` local como ID canónico. Crea a la vez un propietario remoto y autoriza ese `device_id`. Las contraseñas remotas se derivan con scrypt y sal aleatoria en PostgreSQL.
+
+Un equipo autorizado genera un código aleatorio temporal (10 minutos), de un solo uso y almacenado solo como hash. El segundo equipo lo introduce y recibe el mismo `business_id` más tokens exclusivos para su `device_id`. Flutter permite adopción automática únicamente si:
+
+- no existe una identidad segura asociada a otro negocio; y
+- SQLite es una instalación nueva o no tiene ventas, pagos, movimientos de inventario, devoluciones, caja, gastos, compras, cotizaciones, trabajos ni anticipos.
+
+Si hay movimientos u otra identidad, se rechaza y se exige respaldo y migración explícita. No se mezclan negocios silenciosamente.
+
+Los dispositivos se pueden listar y revocar. Revocar marca el dispositivo, sus sesiones y renovaciones; el equipo pierde acceso aunque conserve un token anterior.
+
+## Tokens y permisos
+
+Los tokens son opacos y aleatorios. PostgreSQL conserva únicamente `SHA-256(AUTH_TOKEN_PEPPER || token)`, nunca el valor entregado al cliente. Flutter los guarda mediante `SecureCredentialStore`: Android Keystore o Windows Credential Manager. No aparecen en SQLite, preferencias simples, archivos de configuración, outbox, logs ni auditoría.
+
+- acceso: 15 minutos por defecto;
+- renovación: 30 días por defecto, rotación en cada uso;
+- reutilizar una renovación revoca toda su familia y las sesiones derivadas;
+- cierre de sesión y revocación de dispositivo invalidan credenciales activas;
+- cada sesión liga `business_id`, `device_id`, propietario remoto y permisos (`sync:read`, `sync:write`, `devices:read`, `devices:manage`).
+
+`X-Business-Id` debe coincidir con la sesión autenticada, pero nunca autoriza por sí mismo. Push exige además que cada operación coincida en negocio y dispositivo; pull exige lo mismo en sus parámetros. Ingreso, renovación y vinculación tienen límites persistentes de intentos.
 
 ## Sobre de operación
-
-Cada elemento enviado a `/api/v1/sync/push` contiene:
 
 ```json
 {
@@ -22,74 +47,37 @@ Cada elemento enviado a `/api/v1/sync/push` contiene:
 }
 ```
 
-- `business_id` define el aislamiento de todas las consultas y escrituras.
-- `device_id` identifica el origen, no concede autorización.
-- `operation_id` es estable durante todos los reintentos. Su reutilización con contenido distinto devuelve `409`.
-- `schema_version` versiona el contenido del evento, independientemente del esquema SQLite.
-- `occurred_at` es UTC y se conserva como dato de negocio; el servidor agrega su propia fecha de recepción.
-- `content` se valida, tiene un límite de transporte y no admite contraseñas, hashes, códigos de recuperación, tokens ni secretos.
+`operation_id` permanece estable en reintentos. El mismo ID/contenido devuelve el cursor previo; contenido distinto devuelve `409`. `occurred_at` es UTC del negocio y PostgreSQL agrega `received_at`. El contenido rechaza claves de contraseña, hash, recuperación, token o secreto.
 
-Los pesos continúan como enteros. Valores en millonésimas que exceden el entero seguro de JSON se transportan como cadenas decimales y PostgreSQL los guarda como `BIGINT`; el cliente los convierte de nuevo a entero exacto. No se usan números de punto flotante para dinero.
+Dinero local continúa como pesos enteros; costos/valoración viajan en millonésimas exactas. Enteros fuera del rango seguro JSON viajan como cadenas decimales y llegan a `BIGINT`. No se usa punto flotante.
 
-## Push e idempotencia
+## Push, pull e idempotencia
 
-`POST /api/v1/sync/push` acepta hasta 100 operaciones. El encabezado `X-Business-Id` debe coincidir con cada `business_id` del lote. Por cada operación, PostgreSQL ejecuta una transacción que:
+`POST /api/v1/sync/push` admite hasta 100 operaciones. Cada operación se confirma en una transacción que inserta el evento canónico, valida su huella, materializa proyecciones/libros y registra conflictos. Si se pierde la respuesta, reenviar devuelve el mismo cursor sin repetir efectos.
 
-1. inserta el evento canónico con restricción única `(business_id, operation_id)`;
-2. compara la huella si ya existía;
-3. aplica la proyección de entidad, evento financiero o movimiento de inventario;
-4. registra conflictos sin borrar el evento;
-5. confirma y devuelve `server_cursor`.
+`GET /api/v1/sync/pull` devuelve solo el negocio autenticado, con cursor mayor que `after`, en orden ascendente. `next_cursor` no disminuye. Flutter inserta primero la inbox y luego materializa por dependencias; una dependencia ausente permanece `received` para reintento, y un conflicto determinista queda durable.
 
-Las proyecciones versionadas se serializan por entidad y los saldos de movimientos por producto mediante bloqueos transaccionales consultivos de PostgreSQL. Así dos solicitudes concurrentes no pueden observar el mismo estado anterior y ocultar una revisión o un saldo negativo.
+## Materializadores
 
-Si la respuesta se pierde después del `COMMIT`, el cliente reenvía el mismo `operation_id`; recibe el mismo cursor y no repite la proyección. La outbox local conserva `retry_count`, `last_attempt_at`, `acknowledged_at`, `server_cursor` y `last_error`.
+SQLite esquema 4 y PostgreSQL cubren:
 
-## Pull, inbox y cursor
+- entidades revisadas: productos, clientes, proveedores, cotizaciones y trabajos;
+- hechos financieros inmutables: ventas, pagos, compras, abonos a proveedores, devoluciones/anulaciones, caja, gastos, anticipos y conversiones;
+- documentos compuestos: compras/líneas, cotizaciones/líneas, trabajos/anticipos;
+- inventario: solo `sync_inventory_movements` y movimientos SQLite; nunca stock absoluto.
 
-`GET /api/v1/sync/pull?business_id=…&device_id=…&after=…&limit=…` devuelve únicamente eventos del negocio cuyo `server_cursor` sea mayor que `after`, ordenados ascendentemente. `next_cursor` nunca disminuye y `has_more` indica paginación.
+Ventas offline nunca se eliminan. Dos ventas concurrentes se conservan; un saldo global negativo crea `inventory.negative`. Revisiones inferiores o iguales con contenido diferente crean `revision.stale`. Cotizaciones terminales (`converted`, `rejected`, `expired`) no retroceden. Cada consulta/proyección incluye `business_id`.
 
-El cliente primero inserta todo el lote en `inbox` con unicidad por operación y cursor. Después materializa dependencias en orden: catálogo/clientes, movimientos, ventas y pagos. Un evento con dependencia ausente queda en `received` y se reintenta después; un conflicto determinista pasa a `conflict`. Avanzar el cursor no elimina la inbox pendiente.
+## PostgreSQL
 
-## Tablas locales SQLite, esquema 3
+Tablas de datos: `sync_operations`, `sync_entities`, `sync_financial_events`, `sync_inventory_movements`, `sync_conflicts`.
 
-- `outbox`: evento local, estado, intentos, error y confirmación remota.
-- `inbox`: evento recibido, cursor, estado de aplicación y error.
-- `sync_state`: cursor por negocio, último intento, último éxito y estado interno.
-- `sync_conflicts`: conflicto durable y resoluble sin modificar el evento original.
-- `products`, `customers` y `quotes`: columna `revision` positiva.
+Tablas de identidad: `businesses`, `remote_owners`, `devices`, `sessions`, `refresh_tokens`, `linking_codes`, `token_revocations`, `security_audit`, `auth_attempts`.
 
-La migración 2→3 reconstruye únicamente la outbox para ampliar su restricción de estados; copia todos los eventos pendientes y crea el resto con `IF NOT EXISTS`. La migración 1→2→3 continúa siendo transaccional.
+GitHub Actions usa PostgreSQL 16 real. Parte de una base vacía, aplica migraciones dos veces, prueba idempotencia, aislamiento, revocación, códigos vencidos/reutilizados, dispositivo ajeno, límites y cursor monotónico; después revierte la migración de identidad, verifica el esquema y la reaplica. `MemorySyncStore` queda solo para pruebas unitarias.
 
-Estados internos: `local_only`, `pending`, `syncing`, `synced` y `error`. “Sincronizado” solo puede mostrarse después de confirmar push y pull; sin configuración la interfaz debe seguir comunicando almacenamiento local.
+## Registros y recuperación
 
-## Tablas PostgreSQL
+Fastify oculta Authorization, cookies, `Set-Cookie` y el alcance de negocio. Los handlers no registran cuerpos, contraseñas, códigos ni tokens; fallos internos registran solo el tipo de error. Auditoría de seguridad guarda evento, IDs y metadatos no secretos.
 
-- `sync_operations`: log canónico, cursor global monotónico y huella idempotente.
-- `sync_entities`: proyección versionada de productos, clientes y cotizaciones.
-- `sync_financial_events`: eventos financieros inmutables.
-- `sync_inventory_movements`: libro de movimientos; nunca guarda stock absoluto.
-- `sync_conflicts`: revisiones obsoletas, inventario negativo y futuros conflictos de dominio.
-
-Todas las claves e índices de lectura incluyen `business_id`. Ninguna consulta del almacén recibe un identificador de entidad sin el negocio correspondiente.
-
-## Reglas de convergencia
-
-- Ventas, líneas, pagos, abonos, devoluciones, compras, gastos y caja son anexos inmutables o compensaciones.
-- El inventario central es la suma de movimientos. Dos ventas offline se conservan; si la suma queda negativa se crea `inventory.negative`.
-- Productos, servicios y clientes solo avanzan a una revisión superior. Una revisión igual con contenido distinto o inferior crea `revision.stale`.
-- Cotizaciones no pueden retroceder desde `converted`, `rejected` o `expired`; esta regla se materializará por completo antes del piloto remoto.
-- Ninguna operación financiera usa “último cambio gana”.
-- UUID, `operation_id` y la representación monetaria exacta se preservan extremo a extremo.
-
-## Seguridad y registros
-
-La API exige Bearer y alcance explícito `X-Business-Id`. El secreto compartido actual es solo una base de desarrollo; antes de desplegar se sustituirá por tokens cortos ligados a negocio/dispositivo, rotación y revocación. Flutter recibirá el token desde almacenamiento seguro del sistema mediante un proveedor en memoria; nunca se escribirá en SQLite ni en `.env` versionado.
-
-Fastify oculta `Authorization`, cookies y `Set-Cookie`. Los manejadores no registran cuerpos. Los errores enviados al cliente son genéricos. `.env.example` solo contiene marcadores.
-
-## Recuperación
-
-Un fallo de red deja la operación en `error` o `sending`; el siguiente ciclo la reclama de nuevo. Una respuesta perdida se recupera por idempotencia. Si el cursor local se pierde pero la inbox se conserva, puede reiniciarse desde el último cursor confirmado. Si se restaura un respaldo SQLite, el `device_id` local se conserva según las reglas existentes y el servidor vuelve a entregar los eventos posteriores al cursor restaurado.
-
-Ante corrupción central se restaura PostgreSQL desde respaldo, se verifica la secuencia y se reinicia el servicio antes de aceptar tráfico. No se deben borrar operaciones para “resolver” conflictos; se agregan compensaciones o resoluciones auditables.
+Un fallo de red conserva outbox/inbox. Restaurar SQLite conserva el `device_id` del equipo según las reglas de respaldo. Restaurar PostgreSQL exige detener escrituras, recuperar desde respaldo validado, comprobar secuencias/restricciones y reabrir tráfico. Los conflictos se resuelven con compensaciones auditables, nunca borrando operaciones.

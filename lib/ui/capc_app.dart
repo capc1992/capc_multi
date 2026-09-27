@@ -12,9 +12,11 @@ import '../services/documents.dart';
 import '../services/document_preview.dart';
 import '../services/reporting.dart';
 import '../services/spreadsheets.dart';
+import '../sync/remote_identity.dart';
 import 'access_gate.dart';
 import 'account_security.dart';
 import 'management_pages.dart';
+import 'remote_identity_page.dart';
 import 'spreadsheet_actions.dart';
 import 'ui_shared.dart';
 
@@ -32,8 +34,9 @@ String _timestamp(DateTime value) =>
     DateFormat('dd/MM/yyyy · HH:mm').format(_bogota(value));
 
 class CapcApp extends StatelessWidget {
-  const CapcApp({super.key, required this.repository});
+  const CapcApp({super.key, required this.repository, this.remoteIdentity});
   final CapcRepository repository;
+  final RemoteIdentityController? remoteIdentity;
 
   @override
   Widget build(BuildContext context) {
@@ -115,17 +118,27 @@ class CapcApp extends StatelessWidget {
       ),
       home: CapcAccessGate(
         repository: repository,
-        builder: (onLogout) =>
-            _CapcHome(repository: repository, onLogout: onLogout),
+        builder: (onLogout) => _CapcHome(
+          repository: repository,
+          onLogout: onLogout,
+          remoteIdentity:
+              remoteIdentity ??
+              RemoteIdentityController(repository: repository),
+        ),
       ),
     );
   }
 }
 
 class _CapcHome extends StatefulWidget {
-  const _CapcHome({required this.repository, required this.onLogout});
+  const _CapcHome({
+    required this.repository,
+    required this.onLogout,
+    required this.remoteIdentity,
+  });
   final CapcRepository repository;
   final VoidCallback onLogout;
+  final RemoteIdentityController remoteIdentity;
   @override
   State<_CapcHome> createState() => _CapcHomeState();
 }
@@ -178,6 +191,7 @@ class _CapcHomeState extends State<_CapcHome> {
   @override
   void initState() {
     super.initState();
+    widget.remoteIdentity.initialize();
     final today = _day(_bogota(DateTime.now()));
     _reportFrom = DateTime(today.year, today.month, 1);
     _reportTo = today;
@@ -2133,10 +2147,27 @@ class _CapcHomeState extends State<_CapcHome> {
             ),
           ),
           const SizedBox(height: 16),
-          const _Notice(
-            'Puedes vender sin internet. Esta versión todavía no comparte datos con otros equipos ni se conecta al VPS.',
+          _Notice(
+            widget.remoteIdentity.enabled
+                ? 'La conexión remota es opcional. Las ventas continúan guardándose localmente aunque no haya internet.'
+                : 'Puedes vender sin internet. Esta compilación no comparte datos con otros equipos ni se conecta al VPS.',
             icon: Icons.offline_pin_outlined,
           ),
+          const SizedBox(height: 16),
+          if (_owner)
+            OutlinedButton.icon(
+              onPressed: _busy
+                  ? null
+                  : () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => RemoteIdentityPage(
+                          controller: widget.remoteIdentity,
+                        ),
+                      ),
+                    ),
+              icon: const Icon(Icons.cloud_outlined),
+              label: const Text('Conexión remota y dispositivos'),
+            ),
         ],
       ),
       const SizedBox(height: 20),

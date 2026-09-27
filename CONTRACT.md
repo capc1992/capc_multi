@@ -1,12 +1,20 @@
-﻿# Contrato local CAPC MULTISERVICIO - esquema 3
+﻿# Contrato local CAPC MULTISERVICIO - esquema 4
 
-Este contrato sustituye el alcance antiguo sin autenticación. La interfaz y las operaciones locales comparten reglas entre Windows y Android offline, en español, COP enteros y cantidades enteras. SQLite continúa como fuente local y Windows `0.3.0` como base estable. El intercambio remoto es opcional y permanece desactivado sin configuración. La carpeta canónica es `C:\Users\CAPC\capc_multi`.
+Este contrato sustituye el alcance antiguo sin autenticación. La interfaz y las operaciones locales comparten reglas entre Windows y Android offline, en español, COP enteros y cantidades enteras. SQLite continúa como fuente local y Windows `0.4.0` como base de Etapa 2. El intercambio remoto es opcional y permanece desactivado sin configuración. La carpeta canónica es `C:\Users\CAPC\capc_multi`.
+
+## Etapa 2: identidad y sincronización remota
+
+El esquema local vigente es 4. Las migraciones v1→v2→v3→v4 son conservadoras; la última añade revisiones explícitas de proveedores y trabajos. Producto, cliente, proveedor, cotización y trabajo convergen por revisión. Ventas, pagos, compras, abonos, devoluciones, caja, gastos y anticipos son hechos inmutables. El inventario converge por movimientos, nunca por stock absoluto.
+
+No se sincronizan usuarios locales, contraseñas, hashes, códigos de recuperación ni sesiones locales. La identidad remota usa credenciales independientes, acceso corto y renovación rotatoria ligados a `business_id`, `device_id` y permisos. PostgreSQL guarda solo hashes de tokens/códigos. Flutter guarda los valores en Android Keystore o Windows Credential Manager, nunca en SQLite, preferencias, configuración o logs. `X-Business-Id` solo se valida contra el token y no concede autorización.
+
+El primer dispositivo establece el ID canónico. Los adicionales usan un código temporal de un solo uso. La adopción automática se limita a instalaciones nuevas o sin movimientos y sin otra identidad segura; cualquier base con movimientos u otro negocio exige respaldo y migración explícita. Sin `CAPC_SYNC_URL`, todo continúa offline.
 
 ## Arquitectura y compatibilidad
 
 `lib/data/models.dart` exporta los modelos comunes y `operations_models.dart`. `CapcRepository` es la frontera transaccional y de autorización. `operations.dart` comparte su biblioteca y reutiliza ejecutores de transacción para compras, cotizaciones y trabajos: no anida transacciones públicas.
 
-SQLite conserva claves foráneas, WAL, synchronous FULL, identificadores UUID, eventos locales e historial. Las migraciones v1→v2→v3 conservan productos, clientes, líneas históricas, ventas, pagos, movimientos, numeración, operaciones idempotentes y outbox. El esquema 3 añade revisiones, inbox, cursor, intentos, confirmaciones, estados y conflictos. Las tablas identifican negocio y dispositivo; las consultas se limitan al negocio local. La aplicación Windows permite una sola instancia por sesión para evitar restauraciones concurrentes; el mutex y el código nativo de ventana no se ejecutan en Android.
+SQLite conserva claves foráneas, WAL, synchronous FULL, identificadores UUID, eventos locales e historial. Las migraciones v1→v2→v3→v4 conservan productos, clientes, líneas históricas, ventas, pagos, movimientos, numeración, operaciones idempotentes y outbox. El esquema 4 añade revisiones de proveedores y trabajos sobre inbox, cursor, intentos, confirmaciones, estados y conflictos. Las tablas identifican negocio y dispositivo; las consultas se limitan al negocio local. La aplicación Windows permite una sola instancia por sesión para evitar restauraciones concurrentes; el mutex y el código nativo de ventana no se ejecutan en Android.
 
 `AppPlatformServices` separa ubicación privada, driver local, selector/exportación, impresión/compartir e información del dispositivo. Windows y Android reutilizan `CapcRepository` y el mismo SQLite incluido; no existen repositorios de negocio duplicados por plataforma.
 
@@ -18,7 +26,7 @@ La outbox se escribe en la misma transacción que la mutación local. `lib/sync/
 
 El servidor versionado recibe `business_id`, `device_id`, `operation_id`, tipo, versión, UTC y contenido validado. PostgreSQL aísla toda consulta por negocio y confirma registro, proyección y acuse dentro de una transacción. Ventas, pagos y demás hechos financieros son inmutables; inventario sincroniza movimientos, nunca cantidades absolutas. Revisiones obsoletas y existencias globales negativas generan conflictos durables.
 
-No se sincronizan usuarios locales, contraseñas, hashes, códigos de recuperación, sesiones ni secretos. El Bearer de desarrollo no se persiste en SQLite; la autenticación por dispositivo y el almacenamiento seguro del sistema son requisitos previos al despliegue. El protocolo completo está en `docs/SYNC_SPEC.md`.
+No se sincronizan usuarios locales, contraseñas, hashes, códigos de recuperación, sesiones ni secretos. Los tokens remotos por dispositivo se guardan en Keystore/Credential Manager y nunca en SQLite. El protocolo completo está en `docs/SYNC_SPEC.md`.
 
 ## Identidad y permisos
 

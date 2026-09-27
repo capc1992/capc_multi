@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildApp } from '../src/app.js';
 import { MemorySyncStore } from '../src/memory_store.js';
+import { MemoryIdentityStore } from '../src/memory_identity_store.js';
 import type { SyncOperation } from '../src/protocol.js';
 
-const secret = 'test-secret-with-more-than-thirty-two-characters';
 const businessA = '11111111-1111-4111-8111-111111111111';
 const businessB = '22222222-2222-4222-8222-222222222222';
 const device = '33333333-3333-4333-8333-333333333333';
@@ -30,27 +30,37 @@ describe('sync API', () => {
   const apps: ReturnType<typeof buildApp>[] = [];
   afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
 
-  function setup() {
+  async function setup() {
     const store = new MemorySyncStore();
-    const app = buildApp({ store, sharedSecret: secret, logger: false });
+    const identityStore = new MemoryIdentityStore();
+    const identity = await identityStore.createBusiness({
+      businessId: businessA,
+      businessName: 'Negocio A',
+      email: 'owner@example.test',
+      password: 'remote-password-2026',
+      deviceId: device,
+      deviceName: 'Equipo principal',
+      platform: 'test',
+    }, 'test');
+    const app = buildApp({ store, identityStore, logger: false });
     apps.push(app);
     const headers = {
-      authorization: `Bearer ${secret}`,
+      authorization: `Bearer ${identity.accessToken}`,
       'x-business-id': businessA,
     };
-    return { app, store, headers };
+    return { app, store, identityStore, headers };
   }
 
   it('reports health without exposing configuration', async () => {
-    const { app } = setup();
+    const { app } = await setup();
     const response = await app.inject({ method: 'GET', url: '/health' });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ status: 'ok', service: 'capc-sync', version: 1 });
-    expect(response.body).not.toContain(secret);
+    expect(response.json()).toEqual({ status: 'ok', service: 'capc-sync', version: 2 });
+    expect(response.body).not.toContain('access_token');
   });
 
   it('processes the same operation once after a lost response', async () => {
-    const { app, headers } = setup();
+    const { app, headers } = await setup();
     const body = { operations: [operation()] };
     const first = await app.inject({ method: 'POST', url: '/api/v1/sync/push', headers, payload: body });
     const retry = await app.inject({ method: 'POST', url: '/api/v1/sync/push', headers, payload: body });
@@ -69,7 +79,7 @@ describe('sync API', () => {
   });
 
   it('rejects operation_id reuse with different content', async () => {
-    const { app, headers } = setup();
+    const { app, headers } = await setup();
     await app.inject({ method: 'POST', url: '/api/v1/sync/push', headers, payload: { operations: [operation()] } });
     const response = await app.inject({
       method: 'POST',
@@ -81,7 +91,7 @@ describe('sync API', () => {
   });
 
   it('isolates pull and push by business scope', async () => {
-    const { app, headers } = setup();
+    const { app, headers, identityStore } = await setup();
     await app.inject({ method: 'POST', url: '/api/v1/sync/push', headers, payload: { operations: [operation()] } });
     const forbidden = await app.inject({
       method: 'GET',
@@ -89,17 +99,25 @@ describe('sync API', () => {
       headers,
     });
     expect(forbidden.statusCode).toBe(403);
-    const otherHeaders = { ...headers, 'x-business-id': businessB };
+    const otherDevice = '66666666-6666-4666-8666-666666666666';
+    const otherIdentity = await identityStore.createBusiness({
+      businessId: businessB, businessName: 'Negocio B', email: 'other@example.test',
+      password: 'other-password-2026', deviceId: otherDevice, deviceName: 'Otro', platform: 'test',
+    }, 'other');
+    const otherHeaders = {
+      authorization: `Bearer ${otherIdentity.accessToken}`,
+      'x-business-id': businessB,
+    };
     const other = await app.inject({
       method: 'GET',
-      url: `/api/v1/sync/pull?business_id=${businessB}&device_id=${device}&after=0`,
+      url: `/api/v1/sync/pull?business_id=${businessB}&device_id=${otherDevice}&after=0`,
       headers: otherHeaders,
     });
     expect(other.json().operations).toEqual([]);
   });
 
   it('returns monotonic pages in accepted order', async () => {
-    const { app, headers } = setup();
+    const { app, headers } = await setup();
     const operations = [
       operation({ operation_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', type: 'sale.created' }),
       operation({ operation_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', type: 'product.saved' }),
@@ -122,7 +140,7 @@ describe('sync API', () => {
   });
 
   it('rejects secret fields and records negative inventory conflicts', async () => {
-    const { app, store, headers } = setup();
+    const { app, store, headers } = await setup();
     const rejected = await app.inject({
       method: 'POST',
       url: '/api/v1/sync/push',

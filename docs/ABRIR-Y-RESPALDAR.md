@@ -38,3 +38,8 @@ Los documentos son comprobantes internos, sin validez fiscal. Guardar el PDF es 
 Antes de usar la impresora USB en la operación diaria, prueba su modelo real: controlador, márgenes, acentos, Carta o 80 mm, documentos largos y corte si el equipo lo admite. La compatibilidad física sigue pendiente de esa prueba.
 
 Esta versión trabaja sin internet en un negocio/caja local. Android, conexión al VPS y sincronización entre dispositivos todavía no están disponibles.
+# Instalar en dos o más equipos
+
+El archivo `CAPC-MULTISERVICIO-0.4.0-....zip` es el paquete portable instalable. Copia el ZIP completo a cada equipo, verifica su archivo `.sha256`, extráelo en una carpeta propia y ejecuta `capc_multi.exe`. No copies únicamente el EXE: las DLL y la carpeta `data` son obligatorias.
+
+Cada equipo crea su propia base SQLite y guarda las credenciales remotas en Windows Credential Manager. El ZIP no contiene datos, contraseñas ni tokens. Sin una compilación con `CAPC_SYNC_URL`, los equipos funcionan separados y completamente offline; copiar el programa no sincroniza bases. Para compartir un negocio remoto, el primer equipo debe generar un código temporal y el segundo debe estar nuevo o sin movimientos. Una base con movimientos requiere respaldo y migración explícita.

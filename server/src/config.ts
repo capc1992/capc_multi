@@ -10,7 +10,9 @@ const EnvironmentSchema = z.object({
     .refine((value) => value.startsWith('postgresql://') || value.startsWith('postgres://'), {
       message: 'DATABASE_URL debe usar PostgreSQL',
     }),
-  SYNC_SHARED_SECRET: z.string().min(32),
+  AUTH_TOKEN_PEPPER: z.string().min(32),
+  ACCESS_TOKEN_TTL_MINUTES: z.coerce.number().int().min(5).max(60).default(15),
+  REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(90).default(30),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 });
 

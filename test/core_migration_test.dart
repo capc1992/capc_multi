@@ -219,7 +219,7 @@ void main() {
         expect((await repository.listProducts()).single.stock, 7);
         final raw = sqlite3.open(path);
         try {
-          expect(raw.select('PRAGMA user_version').single.values.single, 3);
+          expect(raw.select('PRAGMA user_version').single.values.single, 4);
           expect(raw.select('PRAGMA foreign_key_check'), isEmpty);
           for (final table in ['inbox', 'sync_state', 'sync_conflicts']) {
             expect(

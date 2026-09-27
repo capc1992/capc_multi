@@ -2,6 +2,16 @@
 
 Actualizado el 27 de septiembre de 2026. Proyecto canónico: `C:\Users\CAPC\capc_multi`.
 
+## Etapa 2 en curso — `feature/cloud-sync-identity`
+
+Rama creada limpia desde `origin/feature/cloud-sync-foundation` (`6559b7a`), que contiene el commit obligatorio `858dedbc31367074408ebe623027b3381e0b97d5`. No se fusionó `master`, no se accedió al VPS y no se abrió ni modificó la base real.
+
+Implementado: identidad remota por negocio/propietario/dispositivo; sesiones y renovaciones rotatorias hasheadas; códigos de vinculación temporales de un solo uso; límites de intentos; listado/revocación/cierre remoto; almacenamiento Flutter en Keystore/Credential Manager; protección contra mezcla de negocios; SQLite esquema 4; materializadores completos de Etapa 2; migraciones PostgreSQL con reversa; OpenAPI y workflow PostgreSQL 16.
+
+La app sigue 100 % offline sin `CAPC_SYNC_URL`. `https://api.capcmultiservicios.site` solo está preparada como referencia y no se activa en compilaciones normales. El paquete Windows es portable: se distribuye el ZIP completo y puede extraerse en dos o más equipos; cada equipo conserva su SQLite y credencial segura privada.
+
+Validación local final: formato estable; análisis Flutter sin observaciones; **170 pruebas Flutter**, 2 pruebas Python y 6 pruebas unitarias del servidor aprobadas; typecheck y build TypeScript correctos; auditoría npm de producción con 0 vulnerabilidades; APK debug y Windows release compilados. Las 6 pruebas PostgreSQL se omiten localmente porque este computador no tiene PostgreSQL. El paquete definitivo es `dist/CAPC-MULTISERVICIO-0.4.0-20260927-154149-290.zip`, SHA-256 `23DFF81F7AD021B5B49EE645ABAE6CA74A8C13A236A426789CC9497E53DB9CE9`, e incluye `flutter_secure_storage_windows_plugin.dll`. No declarar aprobada la integración hasta que GitHub Actions ejecute `Cloud Sync Identity` con PostgreSQL 16 y termine verde; después deben registrarse aquí commit y ejecución.
+
 ## Alcance y autorización vigentes
 
 Solicitud más reciente: crear el fundamento offline-first entre Windows y Android mediante una API central futura, sin acceder al VPS ni eliminar SQLite local. La rama de trabajo es `feature/cloud-sync-foundation`, creada desde `origin/feature/android-offline` en `6d59bf2ee830f7a48727ed03aa915b1408b89e15`.
@@ -16,7 +26,7 @@ No instalar Microsoft Build Tools: la autorización anterior fue retirada. El eq
 
 ## Código disponible
 
-- Versión del proyecto: `0.3.0+6`; esquema SQLite 3 con migraciones conservadoras v1→v2→v3.
+- Versión del proyecto: `0.4.0+7`; esquema SQLite 4 con migraciones conservadoras v1→v2→v3→v4.
 - Usuarios locales propietario/administrador/cajero, contraseñas Argon2id, permisos en repositorio y revocación de sesión.
 - Recuperación offline con código aleatorio de 256 bits, hash SHA-256, uso único, rotación y límite de intentos. «Olvidé mi contraseña» en ingreso y «Seguridad de mi cuenta» para generar/guardar código tras verificar contraseña actual. Alta/reconfiguración propietaria muestran el código al terminar.
 - Materiales, servicios y recetas, inventario con movimientos, costo promedio y sugerencia de precio optativa.

@@ -120,16 +120,16 @@ export class PostgresSyncStore implements SyncStore {
         entity.type === 'quote' &&
         local !== undefined &&
         isTerminalQuoteStatus(local.payload.status) &&
-        local.payload.status !== operation.content.status;
+        local.payload.status !== entity.payload.status;
       if (terminalRegression) {
         conflicts += await this.conflict(client, operation, 'quote.terminal', entity.id, {
           local_status: local.payload.status,
-          remote_status: operation.content.status,
+          remote_status: entity.payload.status,
           local_revision: local.revision,
           remote_revision: entity.revision,
         });
       } else if (local && entity.revision <= local.revision) {
-        if (JSON.stringify(local.payload) !== JSON.stringify(operation.content)) {
+        if (JSON.stringify(local.payload) !== JSON.stringify(entity.payload)) {
           conflicts += await this.conflict(client, operation, 'revision.stale', entity.id, {
             local_revision: local.revision,
             remote_revision: entity.revision,
@@ -146,7 +146,7 @@ export class PostgresSyncStore implements SyncStore {
             entity.type,
             entity.id,
             entity.revision,
-            JSON.stringify(operation.content),
+            JSON.stringify(entity.payload),
             operation.occurred_at,
           ],
         );
@@ -226,16 +226,29 @@ export class PostgresSyncStore implements SyncStore {
   }
 }
 
-function entityRevision(operation: SyncOperation): { type: string; id: string; revision: number } | null {
+function entityRevision(operation: SyncOperation): {
+  type: string;
+  id: string;
+  revision: number;
+  payload: Record<string, unknown>;
+} | null {
   const content = operation.content;
   if (operation.type === 'product.saved' && typeof content.id === 'string') {
-    return { type: 'product', id: content.id, revision: Number(content.revision ?? 1) };
+    return { type: 'product', id: content.id, revision: Number(content.revision ?? 1), payload: content };
   }
   if (operation.type === 'customer.saved' && typeof content.id === 'string') {
-    return { type: 'customer', id: content.id, revision: Number(content.revision ?? 1) };
+    return { type: 'customer', id: content.id, revision: Number(content.revision ?? 1), payload: content };
   }
+  if (operation.type === 'supplier.saved' && typeof content.id === 'string') {
+    return { type: 'supplier', id: content.id, revision: Number(content.revision ?? 1), payload: content };
+  }
+  const quote = objectValue(content.quote) ?? content;
   if (operation.type.startsWith('quote.') && typeof content.quoteId === 'string') {
-    return { type: 'quote', id: content.quoteId, revision: Number(content.revision ?? 1) };
+    return { type: 'quote', id: content.quoteId, revision: Number(quote.revision ?? content.revision ?? 1), payload: quote };
+  }
+  const work = objectValue(content.work);
+  if (operation.type.startsWith('work.') && work && typeof work.id === 'string') {
+    return { type: 'work', id: work.id, revision: Number(work.revision ?? content.revision ?? 1), payload: work };
   }
   return null;
 }
@@ -249,6 +262,10 @@ function inventoryMovements(operation: SyncOperation): Array<Record<string, unkn
   const raw: unknown[] = [];
   if (operation.type === 'stock.adjusted') raw.push(operation.content.movement);
   if (operation.type === 'sale.created' && Array.isArray(operation.content.stockMovements)) {
+    raw.push(...operation.content.stockMovements);
+  }
+  if ((operation.type === 'purchase.received' || operation.type === 'sale.return' || operation.type === 'sale.cancel') &&
+      Array.isArray(operation.content.stockMovements)) {
     raw.push(...operation.content.stockMovements);
   }
   return raw.filter(
@@ -275,4 +292,10 @@ function isFinancial(type: string): boolean {
 
 function isTerminalQuoteStatus(value: unknown): boolean {
   return value === 'converted' || value === 'rejected' || value === 'expired';
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }

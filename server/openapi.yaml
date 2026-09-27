@@ -1,23 +1,127 @@
 openapi: 3.1.0
 info:
   title: CAPC Sync API
-  version: 1.0.0
-  description: Intercambio offline-first de eventos; no contiene credenciales locales.
+  version: 2.0.0
+  description: Sincronización offline-first e identidad remota por negocio y dispositivo. Nunca recibe credenciales locales.
 servers:
-  - url: https://sync.example.invalid
+  - url: https://api.capcmultiservicios.site
+    description: Dirección preparada; no activada por defecto en Flutter.
 paths:
   /health:
     get:
       operationId: health
       responses:
-        '200':
-          description: Servicio activo
+        '200': { description: Servicio activo }
+  /api/v1/identity/businesses:
+    post:
+      operationId: createRemoteBusiness
+      summary: Crea el negocio remoto, propietario remoto y primer dispositivo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateBusiness' }
+      responses:
+        '201': { $ref: '#/components/responses/Tokens' }
+        '409': { description: Negocio o identidad ya existentes }
+        '429': { description: Límite de intentos }
+  /api/v1/identity/login:
+    post:
+      operationId: remoteLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [business_id, email, password, device_id]
+              properties:
+                business_id: { type: string, format: uuid }
+                email: { type: string, format: email }
+                password: { type: string, writeOnly: true }
+                device_id: { type: string, format: uuid }
+      responses:
+        '200': { $ref: '#/components/responses/Tokens' }
+        '401': { description: Credenciales o dispositivo inválidos }
+        '429': { description: Límite de intentos }
+  /api/v1/identity/refresh:
+    post:
+      operationId: rotateRefreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [refresh_token, device_id]
+              properties:
+                refresh_token: { type: string, writeOnly: true }
+                device_id: { type: string, format: uuid }
+      responses:
+        '200': { $ref: '#/components/responses/Tokens' }
+        '401': { description: Token vencido, usado, revocado o ajeno }
+        '429': { description: Límite de intentos }
+  /api/v1/identity/link:
+    post:
+      operationId: linkDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/DeviceIdentity'
+                - type: object
+                  additionalProperties: false
+                  required: [code, local_business_id, local_state]
+                  properties:
+                    code: { type: string, writeOnly: true }
+                    local_business_id: { type: string, format: uuid }
+                    local_state: { type: string, enum: [new, no_movements] }
+      responses:
+        '200': { $ref: '#/components/responses/Tokens' }
+        '409': { description: Código vencido/usado o dispositivo de otro negocio }
+        '429': { description: Límite de intentos }
+  /api/v1/identity/link-codes:
+    post:
+      operationId: createLinkCode
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/BusinessHeader' }]
+      responses:
+        '201': { description: Código temporal de un solo uso y vencimiento }
+        '401': { description: Token inválido }
+        '403': { description: Sin permiso devices:manage o negocio no coincidente }
+  /api/v1/identity/devices:
+    get:
+      operationId: listDevices
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/BusinessHeader' }]
+      responses:
+        '200': { description: Dispositivos autorizados y revocados del negocio autenticado }
+  /api/v1/identity/devices/{deviceId}:
+    delete:
+      operationId: revokeDevice
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/BusinessHeader' }
+        - { name: deviceId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Dispositivo y sus sesiones revocados }
+        '404': { description: Dispositivo no encontrado dentro del negocio }
+  /api/v1/identity/logout:
+    post:
+      operationId: remoteLogout
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/BusinessHeader' }]
+      responses:
+        '204': { description: Sesión y renovación revocadas }
   /api/v1/sync/push:
     post:
       operationId: pushOperations
       security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: '#/components/parameters/BusinessHeader'
+      parameters: [{ $ref: '#/components/parameters/BusinessHeader' }]
       requestBody:
         required: true
         content:
@@ -34,33 +138,70 @@ paths:
       responses:
         '200': { description: Operaciones aceptadas o ya procesadas }
         '400': { description: Contenido inválido o secreto }
-        '401': { description: Token ausente o inválido }
-        '403': { description: Negocio fuera del alcance solicitado }
+        '401': { description: Token ausente, vencido o revocado }
+        '403': { description: Token, X-Business-Id u operación no coinciden en negocio/dispositivo }
         '409': { description: operation_id reutilizado con otro contenido }
   /api/v1/sync/pull:
     get:
       operationId: pullOperations
       security: [{ bearerAuth: [] }]
       parameters:
-        - $ref: '#/components/parameters/BusinessHeader'
+        - { $ref: '#/components/parameters/BusinessHeader' }
         - { name: business_id, in: query, required: true, schema: { type: string, format: uuid } }
         - { name: device_id, in: query, required: true, schema: { type: string, format: uuid } }
         - { name: after, in: query, required: true, schema: { type: integer, minimum: 0 } }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 200 } }
       responses:
-        '200': { description: Cambios posteriores al cursor, ordenados ascendentemente }
+        '200': { description: Cambios posteriores al cursor, en orden ascendente }
+        '403': { description: Identidad o alcance no coincidentes }
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
+      bearerFormat: opaque
   parameters:
     BusinessHeader:
       name: X-Business-Id
       in: header
       required: true
+      description: Debe coincidir con el token; nunca concede autorización por sí solo.
       schema: { type: string, format: uuid }
+  responses:
+    Tokens:
+      description: Identidad ligada a negocio, dispositivo y permisos; tokens opacos con vencimiento.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/TokenPair' }
   schemas:
+    DeviceIdentity:
+      type: object
+      required: [device_id, device_name, platform]
+      properties:
+        device_id: { type: string, format: uuid }
+        device_name: { type: string, maxLength: 160 }
+        platform: { type: string, maxLength: 40 }
+    CreateBusiness:
+      allOf:
+        - { $ref: '#/components/schemas/DeviceIdentity' }
+        - type: object
+          required: [business_id, business_name, email, password]
+          properties:
+            business_id: { type: string, format: uuid }
+            business_name: { type: string, maxLength: 160 }
+            email: { type: string, format: email }
+            password: { type: string, minLength: 12, writeOnly: true }
+    TokenPair:
+      type: object
+      required: [business_id, device_id, permissions, access_token, refresh_token, access_expires_at, refresh_expires_at]
+      properties:
+        business_id: { type: string, format: uuid }
+        device_id: { type: string, format: uuid }
+        permissions: { type: array, items: { type: string } }
+        access_token: { type: string, writeOnly: true }
+        refresh_token: { type: string, writeOnly: true }
+        access_expires_at: { type: string, format: date-time }
+        refresh_expires_at: { type: string, format: date-time }
     Operation:
       type: object
       additionalProperties: false

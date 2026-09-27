@@ -187,7 +187,7 @@ void main() {
         mode: native.OpenMode.readOnly,
       );
       try {
-        expect(migrated.select('PRAGMA user_version').single.values.single, 3);
+        expect(migrated.select('PRAGMA user_version').single.values.single, 4);
         expect(
           migrated
               .select('SELECT retry_count,state FROM outbox')
@@ -400,4 +400,143 @@ void main() {
       db.close();
     }
   });
+
+  test(
+    'dos SQLite materializan compras, devoluciones, caja, cotizaciones y trabajos',
+    () async {
+      final sourcePath = p.join(directory.path, 'source-stage2.sqlite3');
+      final targetPath = p.join(directory.path, 'target-stage2.sqlite3');
+      final source = await openOwned(sourcePath);
+      addTearDown(source.close);
+      await source.backupTo(targetPath);
+      final cloned = native.sqlite3.open(targetPath);
+      try {
+        cloned.execute("UPDATE settings SET value=? WHERE key='device_id'", [
+          '66666666-6666-4666-8666-666666666666',
+        ]);
+      } finally {
+        cloned.close();
+      }
+      final target = await openOwned(targetPath);
+      addTearDown(target.close);
+
+      const productId = '55555555-5555-4555-8555-555555555555';
+      const customerId = '77777777-7777-4777-8777-777777777777';
+      const supplierId = '88888888-8888-4888-8888-888888888888';
+      await source.saveProduct(material());
+      await source.saveCustomer(const Customer(id: customerId, name: 'Ana'));
+      await source.saveSupplier(
+        const Supplier(id: supplierId, name: 'Proveedor etapa 2'),
+      );
+      await source.openCash(
+        1000,
+        operationId: '99999999-9999-4999-8999-999999999999',
+      );
+      final purchase = await source.createPurchase(
+        supplierId: supplierId,
+        reference: 'Compra sincronizada',
+        items: const [
+          PurchaseItemInput(productId: productId, quantity: 3, totalCost: 150),
+        ],
+        dueAt: DateTime.utc(2026, 11, 1),
+        operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      );
+      await source.receivePurchase(
+        purchase.id,
+        operationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      );
+      await source.addSupplierPayment(
+        purchase.id,
+        50,
+        'Efectivo',
+        operationId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      );
+      final sale = await source.createSale(
+        items: const [CartLine(productId: productId, quantity: 1)],
+        customerId: customerId,
+        paid: 200,
+        paymentMethod: 'Efectivo',
+        operationId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      );
+      await source.returnSale(
+        sale.id,
+        [SaleReturnItem(saleLineId: sale.lines.single.id, quantity: 1)],
+        reason: 'Devolución sincronizada',
+        operationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      );
+      await source.addExpense(
+        25,
+        'Mensajería',
+        operationId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      );
+      final quote = await source.createQuote(
+        customerId: customerId,
+        description: 'Cotización sincronizada',
+        items: const [
+          QuoteLineInput(
+            productId: productId,
+            description: 'Papel',
+            quantity: 1,
+            unitPrice: 200,
+          ),
+        ],
+        validUntil: DateTime.utc(2026, 12, 1),
+        operationId: '12345678-1234-4234-8234-123456789012',
+      );
+      await source.updateQuoteStatus(quote.id, QuoteStatus.accepted);
+      final work = await source.createWorkOrder(
+        customerId: customerId,
+        description: 'Trabajo sincronizado',
+        responsible: 'Operaria',
+        deliveryAt: DateTime.utc(2026, 11, 15),
+        quoteId: quote.id,
+        operationId: '23456789-1234-4234-8234-123456789012',
+      );
+      await source.addWorkAdvance(
+        work.id,
+        50,
+        'Efectivo',
+        operationId: '34567890-1234-4234-8234-123456789012',
+      );
+
+      final transport = MemoryTransport();
+      final configuration = SyncConfiguration(
+        baseUri: Uri(scheme: 'http', host: 'localhost', port: 3100),
+      );
+      await SyncEngine(
+        repository: source,
+        configuration: configuration,
+        transport: transport,
+      ).runOnce();
+      final received = await SyncEngine(
+        repository: target,
+        configuration: configuration,
+        transport: transport,
+      ).runOnce();
+
+      expect(received.conflicts, 0);
+      expect(await target.listSuppliers(), hasLength(1));
+      final remotePurchase = (await target.listPurchases()).single;
+      expect(remotePurchase.received, isTrue);
+      expect(remotePurchase.paid, 50);
+      expect(await target.listSaleReturns(), hasLength(1));
+      final targetDatabase = native.sqlite3.open(
+        targetPath,
+        mode: native.OpenMode.readOnly,
+      );
+      try {
+        expect(targetDatabase.select('SELECT * FROM expenses'), hasLength(1));
+      } finally {
+        targetDatabase.close();
+      }
+      expect((await target.listQuotes()).single.status, QuoteStatus.accepted);
+      expect(await target.listWorkOrders(), hasLength(1));
+      expect(await target.listWorkAdvances(), hasLength(1));
+      expect((await target.listProducts()).single.stock, 3);
+      expect(await target.listCashMovements(), isNotEmpty);
+
+      await target.close();
+      await source.close();
+    },
+  );
 }

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'data/repository.dart';
 import 'platform/platform_services.dart';
 import 'services/backup_transfer.dart';
+import 'sync/remote_identity.dart';
 import 'ui/capc_app.dart';
 
 Future<void> main() async {
@@ -11,7 +12,9 @@ Future<void> main() async {
   try {
     databasePath = await appPlatform.databasePath();
     final repository = await CapcRepository.open(databasePath);
-    runApp(CapcApp(repository: repository));
+    final remoteIdentity = RemoteIdentityController(repository: repository);
+    await remoteIdentity.initialize();
+    runApp(CapcApp(repository: repository, remoteIdentity: remoteIdentity));
   } catch (error) {
     runApp(
       _StartupFailure(message: error.toString(), databasePath: databasePath),

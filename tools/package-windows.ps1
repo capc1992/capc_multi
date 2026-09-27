@@ -20,6 +20,7 @@ if ((Get-Item -LiteralPath $capcExecutable).VersionInfo.ProductVersion -ne $capc
 $capcRequired = @(
     'flutter_windows.dll', 'sqlite3.dll', 'pdfium.dll',
     'printing_plugin.dll', 'file_selector_windows_plugin.dll',
+    'flutter_secure_storage_windows_plugin.dll',
     'data\app.so', 'data\icudtl.dat', 'data\flutter_assets\AssetManifest.bin'
 )
 foreach ($capcRelative in $capcRequired) {

@@ -280,10 +280,18 @@ extension CapcSyncStore on CapcRepository {
   });
 
   static int _syncPriority(String type) {
-    if (type == 'product.saved' || type == 'customer.saved') return 0;
-    if (type == 'stock.adjusted') return 1;
-    if (type == 'sale.created') return 2;
-    if (type == 'payment.added') return 3;
+    if (type == 'product.saved' ||
+        type == 'customer.saved' ||
+        type == 'supplier.saved') {
+      return 0;
+    }
+    if (type == 'cash.opened' || type.startsWith('quote.')) return 1;
+    if (type == 'purchase.created' || type.startsWith('work.')) return 2;
+    if (type == 'stock.adjusted' ||
+        type == 'purchase.received' ||
+        type == 'sale.created') {
+      return 3;
+    }
     return 4;
   }
 
@@ -296,6 +304,30 @@ extension CapcSyncStore on CapcRepository {
         return _applySyncProduct(txn, operation);
       case 'customer.saved':
         return _applySyncCustomer(txn, operation);
+      case 'supplier.saved':
+        return _applySyncSupplier(txn, operation);
+      case 'purchase.created':
+      case 'purchase.received':
+      case 'supplier.payment':
+        return _applySyncPurchase(txn, operation);
+      case 'sale.return':
+      case 'sale.cancel':
+        return _applySyncReturn(txn, operation);
+      case 'cash.opened':
+      case 'cash.closed':
+      case 'cash.adjustment':
+      case 'expense':
+        return _applySyncCash(txn, operation);
+      case 'quote.created':
+      case 'quote.updated':
+      case 'quote.status':
+      case 'quote.converted':
+        return _applySyncQuote(txn, operation);
+      case 'work.created':
+      case 'work.updated':
+      case 'work.advance':
+      case 'work.advanceApplied':
+        return _applySyncWork(txn, operation);
       case 'sale.created':
         return _applySyncSale(txn, operation);
       case 'payment.added':
@@ -435,6 +467,471 @@ extension CapcSyncStore on CapcRepository {
     return false;
   }
 
+  Future<bool> _applySyncSupplier(
+    DatabaseExecutor txn,
+    SyncOperation operation,
+  ) async {
+    final data = operation.content;
+    final id = data['id'] as String;
+    final revision = data['revision'] as int? ?? 1;
+    final existing = await txn.query(
+      'suppliers',
+      where: 'id=? AND business_id=?',
+      whereArgs: [id, businessId],
+    );
+    if (existing.isNotEmpty) {
+      final localRevision = existing.single['revision'] as int;
+      if (revision < localRevision ||
+          (revision == localRevision &&
+              existing.single['updated_at'] != data['updated_at'])) {
+        await _recordSyncConflict(txn, operation, 'revision.stale', id, {
+          'local_revision': localRevision,
+          'remote_revision': revision,
+        });
+        return true;
+      }
+      if (revision == localRevision) return false;
+      await txn.update(
+        'suppliers',
+        {
+          for (final key in const [
+            'name',
+            'phone',
+            'document',
+            'address',
+            'updated_at',
+            'revision',
+          ])
+            key: data[key],
+        },
+        where: 'id=? AND business_id=?',
+        whereArgs: [id, businessId],
+      );
+      return false;
+    }
+    await txn.insert('suppliers', {...data, 'business_id': businessId});
+    return false;
+  }
+
+  Future<bool> _applySyncPurchase(
+    DatabaseExecutor txn,
+    SyncOperation operation,
+  ) async {
+    final payload = operation.content;
+    if (operation.type == 'purchase.created') {
+      final raw = payload['purchase'];
+      if (raw is! Map) return false;
+      final purchase = Map<String, Object?>.from(raw);
+      final id = purchase['id'] as String;
+      if ((await txn.query(
+        'purchases',
+        where: 'id=?',
+        whereArgs: [id],
+      )).isEmpty) {
+        final supplierId = purchase['supplier_id'] as String;
+        if ((await txn.query(
+          'suppliers',
+          where: 'id=?',
+          whereArgs: [supplierId],
+        )).isEmpty) {
+          throw const _SyncDependencyException(
+            'Falta el proveedor de la compra.',
+          );
+        }
+        final lines = _syncMaps(payload['purchaseLines']);
+        for (final line in lines) {
+          if ((await txn.query(
+            'products',
+            where: 'id=?',
+            whereArgs: [line['product_id']],
+          )).isEmpty) {
+            throw const _SyncDependencyException(
+              'Falta un producto de la compra.',
+            );
+          }
+        }
+        await txn.insert('purchases', {
+          ...purchase,
+          'business_id': businessId,
+          'device_id': operation.deviceId,
+        });
+        for (final line in lines) {
+          await txn.insert('purchase_lines', line);
+        }
+        for (final payment in _syncMaps(payload['payments'])) {
+          await txn.insert('supplier_payments', {
+            ...payment,
+            'business_id': businessId,
+            'device_id': operation.deviceId,
+          }, conflictAlgorithm: ConflictAlgorithm.ignore);
+        }
+        for (final movement in _syncMaps(payload['cashMovements'])) {
+          await _applySyncCashMovement(txn, operation, movement);
+        }
+      }
+      return false;
+    }
+    final purchaseId = payload['purchaseId'] as String;
+    if ((await txn.query(
+      'purchases',
+      where: 'id=?',
+      whereArgs: [purchaseId],
+    )).isEmpty) {
+      throw const _SyncDependencyException('Falta la compra del evento.');
+    }
+    if (operation.type == 'purchase.received') {
+      await txn.update(
+        'purchases',
+        {'received_at': payload['receivedAt']},
+        where: 'id=? AND received_at IS NULL',
+        whereArgs: [purchaseId],
+      );
+      var conflict = false;
+      for (final movement in _syncMaps(payload['stockMovements'])) {
+        conflict =
+            await _applySyncMovement(txn, operation, movement) || conflict;
+      }
+      return conflict;
+    }
+    final rawPayment = payload['payment'];
+    if (rawPayment is Map) {
+      final payment = Map<String, Object?>.from(rawPayment);
+      final exists = await txn.query(
+        'supplier_payments',
+        where: 'id=?',
+        whereArgs: [payment['id']],
+      );
+      if (exists.isEmpty) {
+        await txn.insert('supplier_payments', {
+          ...payment,
+          'business_id': businessId,
+          'device_id': operation.deviceId,
+        });
+        await txn.rawUpdate('UPDATE purchases SET paid=paid+? WHERE id=?', [
+          payment['amount'],
+          purchaseId,
+        ]);
+      }
+    }
+    await _applySyncCashMovement(txn, operation, payload['cashMovement']);
+    return false;
+  }
+
+  Future<bool> _applySyncReturn(
+    DatabaseExecutor txn,
+    SyncOperation operation,
+  ) async {
+    final payload = operation.content;
+    final saleId = payload['saleId'] as String;
+    if ((await txn.query(
+      'sales',
+      where: 'id=?',
+      whereArgs: [saleId],
+    )).isEmpty) {
+      throw const _SyncDependencyException('Falta la venta de la devolución.');
+    }
+    final rawReturn = payload['return'];
+    if (rawReturn is Map) {
+      final record = Map<String, Object?>.from(rawReturn);
+      final id = record['id'] as String;
+      if ((await txn.query(
+        'sale_returns',
+        where: 'id=?',
+        whereArgs: [id],
+      )).isEmpty) {
+        await txn.insert('sale_returns', {
+          ...record,
+          'business_id': businessId,
+          'device_id': operation.deviceId,
+        });
+        for (final line in _syncMaps(payload['lines'])) {
+          await txn.insert('sale_return_lines', {
+            ...line,
+            'business_id': businessId,
+          });
+          await txn.rawUpdate(
+            'UPDATE sale_lines SET returned_quantity=returned_quantity+?,recovered_cost_micros=recovered_cost_micros+? WHERE id=?',
+            [
+              line['quantity'],
+              line['cost_reversed_micros'],
+              line['sale_line_id'],
+            ],
+          );
+        }
+        await txn.rawUpdate(
+          'UPDATE sales SET returned_total=returned_total+?,paid=paid-?,refunded=refunded+?,cancelled=? WHERE id=?',
+          [
+            payload['amount'],
+            payload['refund'],
+            payload['refund'],
+            record['cancelled'],
+            saleId,
+          ],
+        );
+        for (final payment in _syncMaps(payload['refundPayments'])) {
+          await txn.insert('payments', {
+            ...payment,
+            'business_id': businessId,
+          }, conflictAlgorithm: ConflictAlgorithm.ignore);
+        }
+      }
+    }
+    var conflict = false;
+    for (final movement in _syncMaps(payload['stockMovements'])) {
+      conflict = await _applySyncMovement(txn, operation, movement) || conflict;
+    }
+    for (final movement in _syncMaps(payload['cashMovements'])) {
+      await _applySyncCashMovement(txn, operation, movement);
+    }
+    return conflict;
+  }
+
+  Future<bool> _applySyncCash(
+    DatabaseExecutor txn,
+    SyncOperation operation,
+  ) async {
+    final payload = operation.content;
+    if (operation.type == 'cash.opened') {
+      final raw = payload['session'];
+      if (raw is Map) {
+        await txn.insert('cash_sessions', {
+          ...Map<String, Object?>.from(raw),
+          'business_id': businessId,
+          'device_id': operation.deviceId,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      return false;
+    }
+    if (operation.type == 'cash.closed') {
+      final raw = payload['session'];
+      if (raw is Map) {
+        final session = Map<String, Object?>.from(raw);
+        await txn.update(
+          'cash_sessions',
+          session,
+          where: 'id=? AND business_id=?',
+          whereArgs: [session['id'], businessId],
+        );
+      }
+      return false;
+    }
+    await _applySyncCashMovement(txn, operation, payload['cashMovement']);
+    final rawExpense = payload['expense'];
+    if (rawExpense is Map) {
+      await txn.insert('expenses', {
+        ...Map<String, Object?>.from(rawExpense),
+        'business_id': businessId,
+        'device_id': operation.deviceId,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    return false;
+  }
+
+  Future<void> _applySyncCashMovement(
+    DatabaseExecutor txn,
+    SyncOperation operation,
+    Object? raw,
+  ) async {
+    if (raw is! Map) return;
+    final movement = Map<String, Object?>.from(raw);
+    if ((await txn.query(
+      'cash_sessions',
+      where: 'id=?',
+      whereArgs: [movement['session_id']],
+    )).isEmpty) {
+      throw const _SyncDependencyException(
+        'Falta la sesión de caja del movimiento.',
+      );
+    }
+    await txn.insert('cash_movements', {
+      ...movement,
+      'business_id': businessId,
+      'device_id': operation.deviceId,
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+  }
+
+  Future<bool> _applySyncQuote(
+    DatabaseExecutor txn,
+    SyncOperation operation,
+  ) async {
+    final payload = operation.content;
+    final raw = payload['quote'];
+    if (raw is! Map) {
+      final id = payload['quoteId'] as String;
+      if ((await txn.query('quotes', where: 'id=?', whereArgs: [id])).isEmpty) {
+        throw const _SyncDependencyException('Falta la cotización del evento.');
+      }
+      await txn.update(
+        'quotes',
+        {
+          if (payload.containsKey('status')) 'status': payload['status'],
+          if (payload.containsKey('saleId')) 'sale_id': payload['saleId'],
+          if (payload.containsKey('revision')) 'revision': payload['revision'],
+          'updated_at': operation.occurredAt.toIso8601String(),
+        },
+        where: 'id=?',
+        whereArgs: [id],
+      );
+      return false;
+    }
+    final quote = Map<String, Object?>.from(raw);
+    final id = quote['id'] as String;
+    final revision = quote['revision'] as int;
+    final existing = await txn.query('quotes', where: 'id=?', whereArgs: [id]);
+    if (existing.isNotEmpty) {
+      final localRevision = existing.single['revision'] as int;
+      final terminal = const {
+        'converted',
+        'rejected',
+        'expired',
+      }.contains(existing.single['status']);
+      if (terminal && existing.single['status'] != quote['status']) {
+        await _recordSyncConflict(txn, operation, 'quote.terminal', id, {
+          'local_status': existing.single['status'],
+          'remote_status': quote['status'],
+        });
+        return true;
+      }
+      if (revision <= localRevision) return false;
+      await txn.update(
+        'quotes',
+        {...quote, 'business_id': businessId},
+        where: 'id=?',
+        whereArgs: [id],
+      );
+      if (payload['quoteLines'] is List) {
+        await txn.delete('quote_lines', where: 'quote_id=?', whereArgs: [id]);
+        for (final line in _syncMaps(payload['quoteLines'])) {
+          await txn.insert('quote_lines', line);
+        }
+      }
+      return false;
+    }
+    if ((await txn.query(
+      'customers',
+      where: 'id=?',
+      whereArgs: [quote['customer_id']],
+    )).isEmpty) {
+      throw const _SyncDependencyException(
+        'Falta el cliente de la cotización.',
+      );
+    }
+    await txn.insert('quotes', {
+      ...quote,
+      'business_id': businessId,
+      'device_id': operation.deviceId,
+    });
+    for (final line in _syncMaps(payload['quoteLines'])) {
+      await txn.insert('quote_lines', line);
+    }
+    return false;
+  }
+
+  Future<bool> _applySyncWork(
+    DatabaseExecutor txn,
+    SyncOperation operation,
+  ) async {
+    final payload = operation.content;
+    if (operation.type == 'work.advance') {
+      final raw = payload['advance'];
+      if (raw is! Map) return false;
+      final advance = Map<String, Object?>.from(raw);
+      if ((await txn.query(
+        'work_orders',
+        where: 'id=?',
+        whereArgs: [advance['work_id']],
+      )).isEmpty) {
+        throw const _SyncDependencyException('Falta el trabajo del anticipo.');
+      }
+      await txn.insert('work_advances', {
+        ...advance,
+        'business_id': businessId,
+        'device_id': operation.deviceId,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      await _applySyncCashMovement(txn, operation, payload['cashMovement']);
+      return false;
+    }
+    if (operation.type == 'work.advanceApplied') {
+      final workId = payload['workId'] as String;
+      final saleId = payload['saleId'] as String;
+      if ((await txn.query(
+            'work_orders',
+            where: 'id=?',
+            whereArgs: [workId],
+          )).isEmpty ||
+          (await txn.query(
+            'sales',
+            where: 'id=?',
+            whereArgs: [saleId],
+          )).isEmpty) {
+        throw const _SyncDependencyException(
+          'Falta el trabajo o la venta del anticipo.',
+        );
+      }
+      for (final id in (payload['advanceIds'] as List? ?? const [])) {
+        await txn.update(
+          'work_advances',
+          {
+            'sale_id': saleId,
+            'applied_at': operation.occurredAt.toIso8601String(),
+          },
+          where: 'id=?',
+          whereArgs: [id],
+        );
+      }
+      await txn.rawUpdate('UPDATE sales SET prepaid=prepaid+? WHERE id=?', [
+        payload['amount'],
+        saleId,
+      ]);
+      await txn.update(
+        'work_orders',
+        {
+          'sale_id': saleId,
+          'updated_at': operation.occurredAt.toIso8601String(),
+        },
+        where: 'id=?',
+        whereArgs: [workId],
+      );
+      return false;
+    }
+    final raw = payload['work'];
+    if (raw is! Map) return false;
+    final work = Map<String, Object?>.from(raw);
+    final id = work['id'] as String;
+    final revision =
+        work['revision'] as int? ?? payload['revision'] as int? ?? 1;
+    final existing = await txn.query(
+      'work_orders',
+      where: 'id=?',
+      whereArgs: [id],
+    );
+    if (existing.isNotEmpty) {
+      final localRevision = existing.single['revision'] as int;
+      if (revision <= localRevision) return false;
+      await txn.update(
+        'work_orders',
+        {...work, 'business_id': businessId},
+        where: 'id=?',
+        whereArgs: [id],
+      );
+      return false;
+    }
+    if ((await txn.query(
+      'customers',
+      where: 'id=?',
+      whereArgs: [work['customer_id']],
+    )).isEmpty) {
+      throw const _SyncDependencyException('Falta el cliente del trabajo.');
+    }
+    await txn.insert('work_orders', {
+      ...work,
+      'revision': revision,
+      'business_id': businessId,
+      'device_id': operation.deviceId,
+    });
+    return false;
+  }
+
   Future<bool> _applySyncSale(
     DatabaseExecutor txn,
     SyncOperation operation,
@@ -486,6 +983,9 @@ extension CapcSyncStore on CapcRepository {
       for (final payment in _syncMaps(payload['payments'])) {
         await txn.insert('payments', {...payment, 'business_id': businessId});
       }
+      for (final movement in _syncMaps(payload['cashMovements'])) {
+        await _applySyncCashMovement(txn, operation, movement);
+      }
     }
     var conflict = false;
     for (final movement in _syncMaps(payload['stockMovements'])) {
@@ -522,6 +1022,11 @@ extension CapcSyncStore on CapcRepository {
       payment['amount'],
       saleId,
     ]);
+    await _applySyncCashMovement(
+      txn,
+      operation,
+      operation.content['cashMovement'],
+    );
     return false;
   }
 
