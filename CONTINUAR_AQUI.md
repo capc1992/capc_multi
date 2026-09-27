@@ -56,6 +56,7 @@ Verificación de esta rama:
 - `server/` contiene Fastify/TypeScript, contrato validado, OpenAPI, almacén PostgreSQL transaccional, aislamiento por `business_id`, cursor monotónico y pruebas HTTP con almacén en memoria. No se accedió ni desplegó al VPS.
 - Protocolo y seguridad: `docs/SYNC_SPEC.md`. Etapas pendientes: `docs/SYNC_ROADMAP.md`. Operación local del servidor: `server/README.md`.
 - Comprobación final: formato estable; análisis Flutter limpio; **165 pruebas Flutter aprobadas** (las 160 anteriores y 5 nuevas); 2 pruebas Python aprobadas; typecheck, build TypeScript y **6 pruebas del servidor** aprobadas; auditoría npm de producción con 0 vulnerabilidades; APK debug y Windows release compilados. Este equipo no tiene Docker ni `psql`, por lo que la migración y las transacciones aún deben verificarse contra PostgreSQL real antes de cualquier piloto.
+- Punto de recuperación funcional: commit `858dedbc31367074408ebe623027b3381e0b97d5`, publicado en `origin/feature/cloud-sync-foundation`. La rama `master` no se modificó ni se fusionó. El próximo trabajo debe continuar desde esta rama y mantener pendiente la validación contra una instancia PostgreSQL desechable; nunca debe usar la base real del negocio.
 
 ## Excel y alta de cliente desde venta (0.3.0)
 
