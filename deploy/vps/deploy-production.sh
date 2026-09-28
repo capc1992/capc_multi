@@ -88,7 +88,7 @@ source "$environment_file"
 set +a
 
 cd "$server_dir"
-npm ci
+npm ci --include=dev
 npm run build
 npm run migrate
 
