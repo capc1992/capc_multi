@@ -26,3 +26,19 @@ const app = buildApp({
 });
 
 await app.listen({ host: config.HOST, port: config.PORT });
+
+let closing = false;
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    if (closing) return;
+    closing = true;
+    app.log.info({ signal }, 'shutdown_started');
+    void app.close().then(
+      () => process.exit(0),
+      (error: unknown) => {
+        app.log.error({ error_type: error instanceof Error ? error.name : 'UnknownError' }, 'shutdown_failed');
+        process.exit(1);
+      },
+    );
+  });
+}

@@ -53,6 +53,7 @@ const publicIdentityRoutes = new Set([
 export function buildApp(options: BuildAppOptions): FastifyInstance {
   const identities = new WeakMap<FastifyRequest, AuthIdentity>();
   const app = Fastify({
+    trustProxy: '127.0.0.1',
     logger: options.logger ?? {
       level: 'info',
       redact: [
