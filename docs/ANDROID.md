@@ -74,7 +74,18 @@ La compilación de comprobación `flutter build apk --debug --no-pub` fue aproba
 ## Pendiente para etapas posteriores
 
 - probar apertura, persistencia, selector, restauración, compartir e impresión en un dispositivo Android real;
-- definir el identificador definitivo de aplicación, firma, iconos y política de privacidad;
+- definir el identificador definitivo de aplicación, firma e iconos, y desplegar públicamente la política de privacidad ya implementada;
 - completar autenticación remota, almacenamiento seguro de tokens, materializadores y piloto PostgreSQL/VPS;
 - probar sincronización entre equipos antes de mostrar “Sincronizado”;
 - preparar pruebas cerradas y publicación en Play Console solo con autorización posterior.
+
+## Privacidad y eliminación de cuenta
+
+`Configuración > Conexión remota y dispositivos` ofrece la política de privacidad, el recurso web externo y, cuando hay una identidad conectada, `Eliminar cuenta remota`. La eliminación exige correo, contraseña remota y escribir `ELIMINAR`; borra la identidad y los datos sincronizados del servidor y limpia la credencial segura del dispositivo. No elimina silenciosamente SQLite local.
+
+Las URL que deben permanecer públicas y registrarse en Play Console son:
+
+- `https://api.capcmultiservicios.site/privacidad`
+- `https://api.capcmultiservicios.site/eliminar-cuenta`
+
+El código y las pruebas no convierten esas URL en públicas por sí solos: requieren desplegar la API con HTTPS antes de enviar la ficha a revisión.

@@ -106,6 +106,66 @@ describePostgres('PostgreSQL identity and sync integration', () => {
     expect(revokedAccess.statusCode).toBe(401);
   });
 
+  it('deletes identity, sessions, devices and synchronized business data', async () => {
+    const app = setup();
+    const identity = await createBusiness(app);
+    const operationId = randomUUID();
+    const entityId = randomUUID();
+    const pushed = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sync/push',
+      headers: headers(identity),
+      payload: {
+        operations: [{
+          business_id: identity.business_id,
+          device_id: identity.device_id,
+          operation_id: operationId,
+          type: 'customer.saved',
+          schema_version: 1,
+          occurred_at: '2026-09-27T03:00:00.000Z',
+          content: { id: entityId, name: 'Cliente', revision: 1 },
+        }],
+      },
+    });
+    expect(pushed.statusCode).toBe(200);
+
+    const deleted = await app.inject({
+      method: 'POST',
+      url: '/api/v1/identity/delete-account',
+      payload: {
+        business_id: identity.business_id,
+        email: 'owner@example.test',
+        password: 'remote-password-2026',
+        confirmation: 'ELIMINAR',
+      },
+    });
+    expect(deleted.statusCode).toBe(204);
+
+    const business = await pool!.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM businesses WHERE id=$1',
+      [identity.business_id],
+    );
+    expect(Number(business.rows[0]!.count), 'businesses').toBe(0);
+    for (const table of [
+      'remote_owners', 'devices', 'sessions', 'refresh_tokens',
+      'linking_codes', 'token_revocations', 'security_audit', 'sync_operations',
+      'sync_entities', 'sync_financial_events', 'sync_inventory_movements',
+      'sync_conflicts',
+    ]) {
+      const result = await pool!.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM ${table} WHERE business_id=$1`,
+        [identity.business_id],
+      );
+      expect(Number(result.rows[0]!.count), table).toBe(0);
+    }
+    const rejected = await app.inject({
+      method: 'GET',
+      url: `/api/v1/sync/pull?business_id=${identity.business_id}&device_id=${identity.device_id}&after=0`,
+      headers: headers(identity),
+    });
+    expect(rejected.statusCode).toBe(401);
+  });
+
   it('links once, rejects expired/reused codes and a device from another business', async () => {
     const app = setup();
     const first = await createBusiness(app);

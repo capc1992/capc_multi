@@ -68,6 +68,12 @@ class RemoteIdentityController {
   bool get enabled => configuration.enabled;
   RemoteSession? get session => _session;
   bool get connected => _session != null;
+  Uri get privacyUri => (configuration.baseUri ?? recommendedProductionUri)
+      .resolve('/privacidad');
+  Uri get accountDeletionUri =>
+      (configuration.baseUri ?? recommendedProductionUri).resolve(
+        '/eliminar-cuenta',
+      );
 
   Future<void> initialize() async {
     if (!enabled) return;
@@ -215,6 +221,33 @@ class RemoteIdentityController {
     }
   }
 
+  Future<void> deleteAccount({
+    required String email,
+    required String password,
+  }) async {
+    _requireEnabled();
+    final current = _session ?? await credentials.read();
+    if (current == null || current.businessId != repository.businessId) {
+      throw const RemoteIdentityException(
+        'Inicia sesión remota para eliminar la cuenta.',
+      );
+    }
+    await _post('/api/v1/identity/delete-account', {
+      'business_id': current.businessId,
+      'email': email.trim(),
+      'password': password,
+      'confirmation': 'ELIMINAR',
+    });
+    _session = null;
+    _identityConflict = false;
+    await credentials.clear();
+  }
+
+  Future<void> openPrivacyPolicy() => appPlatform.openExternalUri(privacyUri);
+
+  Future<void> openExternalDeletion() =>
+      appPlatform.openExternalUri(accountDeletionUri);
+
   Future<RemoteSession> _saveSession(Map<String, Object?> json) async {
     final session = RemoteSession.fromJson(json);
     if (session.deviceId != repository.deviceId ||
@@ -305,6 +338,9 @@ class RemoteIdentityController {
       'El dispositivo pertenece a otro negocio. Haz un respaldo y migra explícitamente.',
     'local_business_belongs_to_another_remote_business' =>
       'La base local identifica otro negocio remoto. Haz un respaldo y usa la migración explícita.',
+    'business_id_required' =>
+      'Este correo administra más de un negocio. Verifica el identificador del negocio.',
+    'business_unavailable' => 'La cuenta remota ya no está disponible.',
     _ => 'No se pudo completar la operación remota.',
   };
 }

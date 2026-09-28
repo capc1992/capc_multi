@@ -48,6 +48,27 @@ class MainActivity : FlutterActivity() {
                             }
                         }
                     }
+                    "openExternalUrl" -> {
+                        val value = call.argument<String>("url")
+                        val uri = value?.let(Uri::parse)
+                        if (uri == null || uri.scheme != "https") {
+                            result.error("invalid_url", "CAPC solo abre enlaces HTTPS.", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            startActivity(
+                                Intent(Intent.ACTION_VIEW, uri)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                            result.success(null)
+                        } catch (error: Exception) {
+                            result.error(
+                                "browser_unavailable",
+                                "No se pudo abrir el navegador.",
+                                error.message,
+                            )
+                        }
+                    }
                     "saveDocument" -> {
                         if (pendingResult != null) {
                             result.error(

@@ -7,6 +7,7 @@ import {
   ownerPermissions,
   type AuthIdentity,
   type CreateBusinessInput,
+  type DeleteBusinessInput,
   type DeviceRecord,
   type IdentityStore,
   type IssuedIdentity,
@@ -327,6 +328,70 @@ export class PostgresIdentityStore implements IdentityStore {
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async deleteBusiness(input: DeleteBusinessInput, requestKey: string): Promise<string> {
+    const client = await this.pool.connect();
+    const rateKey = `${requestKey}:${input.email.toLowerCase()}:${input.businessId ?? 'unspecified'}`;
+    try {
+      await client.query('BEGIN');
+      await this.rateLimit(client, 'account.delete', rateKey, 3, 60);
+      const result = await client.query<{
+        id: string; business_id: string; password_salt: Buffer; password_hash: Buffer;
+      }>(
+        `SELECT o.id,o.business_id,o.password_salt,o.password_hash
+         FROM remote_owners o JOIN businesses b ON b.id=o.business_id
+         WHERE o.email=lower($1) AND o.disabled_at IS NULL AND b.disabled_at IS NULL
+           AND ($2::uuid IS NULL OR o.business_id=$2::uuid)
+         FOR UPDATE OF o,b`,
+        [input.email, input.businessId ?? null],
+      );
+      const valid = [];
+      for (const owner of result.rows) {
+        if (await verifyPassword(input.password, owner.password_salt, owner.password_hash)) valid.push(owner);
+      }
+      if (result.rows.length === 0) {
+        await verifyPassword(input.password, Buffer.alloc(16), Buffer.alloc(64));
+      }
+      if (valid.length !== 1) {
+        throw new IdentityError(valid.length > 1 ? 'business_id_required' : 'invalid_credentials', valid.length > 1 ? 409 : 401);
+      }
+      const businessId = valid[0]!.business_id;
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`business:${businessId}`]);
+      for (const table of [
+        'sync_conflicts',
+        'sync_inventory_movements',
+        'sync_financial_events',
+        'sync_entities',
+        'sync_operations',
+        'token_revocations',
+        'refresh_tokens',
+        'sessions',
+        'linking_codes',
+        'devices',
+        'security_audit',
+        'remote_owners',
+      ]) {
+        await client.query(`DELETE FROM ${table} WHERE business_id=$1`, [businessId]);
+      }
+      const deleted = await client.query('DELETE FROM businesses WHERE id=$1', [businessId]);
+      if (deleted.rowCount !== 1) throw new IdentityError('invalid_credentials', 401);
+      await client.query('DELETE FROM auth_attempts WHERE action=$1 AND key_hash=$2', [
+        'account.delete',
+        this.tokenHash(rateKey),
+      ]);
+      await client.query('COMMIT');
+      return businessId;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      if (error instanceof IdentityError &&
+          (error.code === 'invalid_credentials' || error.code === 'business_id_required')) {
+        await this.recordAttempt('account.delete', rateKey, false);
+      }
       throw error;
     } finally {
       client.release();

@@ -52,6 +52,18 @@ export class MemorySyncStore implements SyncStore {
     };
   }
 
+  async deleteBusiness(businessId: string): Promise<void> {
+    for (let index = this.operations.length - 1; index >= 0; index--) {
+      if (this.operations[index]!.business_id === businessId) this.operations.splice(index, 1);
+    }
+    for (const key of this.inventory.keys()) {
+      if (key.startsWith(`${businessId}:`)) this.inventory.delete(key);
+    }
+    for (let index = this.conflicts.length - 1; index >= 0; index--) {
+      if (this.conflicts[index]!.businessId === businessId) this.conflicts.splice(index, 1);
+    }
+  }
+
   async close(): Promise<void> {}
 
   private applyInventory(operation: SyncOperation): number {

@@ -47,6 +47,12 @@ export interface LoginInput {
   deviceId: string;
 }
 
+export interface DeleteBusinessInput {
+  businessId?: string;
+  email: string;
+  password: string;
+}
+
 export interface LinkDeviceInput {
   code: string;
   deviceId: string;
@@ -66,6 +72,7 @@ export interface IdentityStore {
   listDevices(identity: AuthIdentity): Promise<DeviceRecord[]>;
   revokeDevice(identity: AuthIdentity, deviceId: string): Promise<void>;
   logout(identity: AuthIdentity): Promise<void>;
+  deleteBusiness(input: DeleteBusinessInput, requestKey: string): Promise<string>;
   close(): Promise<void>;
 }
 

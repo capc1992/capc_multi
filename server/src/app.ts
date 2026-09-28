@@ -2,8 +2,9 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { z, ZodError } from 'zod';
 
 import { IdentityError, requirePermission, type AuthIdentity, type IdentityStore, type IssuedIdentity } from './identity.js';
+import { accountDeletionPage, privacyPage } from './public_pages.js';
 import { PullQuerySchema, PushSchema } from './protocol.js';
-import { IdempotencyConflictError, type SyncStore } from './store.js';
+import { BusinessUnavailableError, IdempotencyConflictError, type SyncStore } from './store.js';
 
 interface BuildAppOptions {
   store: SyncStore;
@@ -29,6 +30,12 @@ const LoginSchema = z.object({
   device_id: z.string().uuid(),
 }).strict();
 const RefreshSchema = z.object({ refresh_token: z.string().min(32).max(512), device_id: z.string().uuid() }).strict();
+const DeleteAccountSchema = z.object({
+  business_id: z.string().uuid().optional(),
+  email: z.email().max(320),
+  password: z.string().min(1).max(200),
+  confirmation: z.literal('ELIMINAR'),
+}).strict();
 const LinkSchema = DeviceSchema.extend({
   code: z.string().trim().min(6).max(32).transform((value) => value.toUpperCase()),
   local_business_id: z.string().uuid(),
@@ -40,6 +47,7 @@ const publicIdentityRoutes = new Set([
   '/api/v1/identity/login',
   '/api/v1/identity/refresh',
   '/api/v1/identity/link',
+  '/api/v1/identity/delete-account',
 ]);
 
 export function buildApp(options: BuildAppOptions): FastifyInstance {
@@ -58,6 +66,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   });
 
   app.get('/health', async () => ({ status: 'ok', service: 'capc-sync', version: 2 }));
+
+  app.get('/privacidad', async (_request, reply) => publicPage(reply, privacyPage));
+  app.get('/eliminar-cuenta', async (_request, reply) => publicPage(reply, accountDeletionPage));
 
   app.addHook('preHandler', async (request, reply) => {
     const path = request.url.split('?')[0]!;
@@ -108,6 +119,17 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       localBusinessId: body.local_business_id,
       localState: body.local_state,
     }, requestKey(request)));
+  });
+
+  app.post('/api/v1/identity/delete-account', async (request, reply) => {
+    const body = DeleteAccountSchema.parse(request.body);
+    const deletedBusinessId = await options.identityStore.deleteBusiness({
+      ...(body.business_id === undefined ? {} : { businessId: body.business_id }),
+      email: body.email,
+      password: body.password,
+    }, requestKey(request));
+    await options.store.deleteBusiness(deletedBusinessId);
+    return reply.code(204).send();
   });
 
   app.post('/api/v1/identity/link-codes', async (request, reply) => {
@@ -168,6 +190,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (error instanceof ZodError) return reply.code(400).send({ error: 'invalid_request', issues: error.issues });
     if (error instanceof IdentityError) return reply.code(error.statusCode).send({ error: error.code });
     if (error instanceof IdempotencyConflictError) return reply.code(409).send({ error: 'operation_id_conflict' });
+    if (error instanceof BusinessUnavailableError) return reply.code(410).send({ error: 'business_unavailable' });
     app.log.error({ error_type: error instanceof Error ? error.name : 'UnknownError' }, 'request_failed');
     return reply.code(500).send({ error: 'internal_error' });
   });
@@ -200,4 +223,14 @@ function tokenResponse(value: IssuedIdentity): Record<string, unknown> {
     access_expires_at: value.accessExpiresAt,
     refresh_expires_at: value.refreshExpiresAt,
   };
+}
+
+function publicPage(reply: import('fastify').FastifyReply, html: string) {
+  return reply
+    .header('Cache-Control', 'public, max-age=300')
+    .header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+    .header('Referrer-Policy', 'no-referrer')
+    .header('X-Content-Type-Options', 'nosniff')
+    .type('text/html; charset=utf-8')
+    .send(html);
 }

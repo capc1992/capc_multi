@@ -2,6 +2,8 @@
 
 API Fastify/TypeScript para identidad remota y sincronización offline-first sobre PostgreSQL 16. SQLite sigue siendo la fuente operativa de cada equipo: la API almacena eventos idempotentes, proyecciones revisadas, hechos financieros inmutables y movimientos de inventario.
 
+La API también sirve `GET /privacidad` y `GET /eliminar-cuenta`. `POST /api/v1/identity/delete-account` exige las credenciales remotas, confirmación explícita y aplica límite de intentos; elimina transaccionalmente la identidad y los datos sincronizados del negocio. Consulta `docs/PRIVACIDAD-Y-ELIMINACION.md`.
+
 ## Seguridad e identidad
 
 - Cada propietario remoto usa una contraseña independiente de las cuentas locales.

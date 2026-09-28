@@ -2,9 +2,9 @@ name: Cloud Sync Identity
 
 on:
   push:
-    branches: [feature/cloud-sync-identity]
+    branches: [feature/cloud-sync-identity, feature/cross-platform-updates]
   pull_request:
-    branches: [feature/cloud-sync-identity]
+    branches: [feature/cloud-sync-identity, feature/cross-platform-updates]
 
 permissions:
   contents: read

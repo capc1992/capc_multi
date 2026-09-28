@@ -10,6 +10,47 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart' as native;
 
+class _DeletionController extends RemoteIdentityController {
+  _DeletionController({required super.repository})
+    : _session = RemoteSession(
+        businessId: repository.businessId,
+        deviceId: repository.deviceId,
+        accessToken: 'access-token-for-widget',
+        refreshToken: 'refresh-token-for-widget',
+        accessExpiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+        refreshExpiresAt: DateTime.now().toUtc().add(const Duration(days: 1)),
+        permissions: const ['devices:manage'],
+      );
+
+  final RemoteSession _session;
+  bool deleted = false;
+
+  @override
+  bool get enabled => true;
+
+  @override
+  bool get connected => !deleted;
+
+  @override
+  RemoteSession? get session => deleted ? null : _session;
+
+  @override
+  Future<void> initialize() async {}
+
+  @override
+  Future<List<RemoteDevice>> listDevices() async => const [];
+
+  @override
+  Future<void> deleteAccount({
+    required String email,
+    required String password,
+  }) async {
+    expect(email, 'owner@example.test');
+    expect(password, 'remote-password-2026');
+    deleted = true;
+  }
+}
+
 void main() {
   late Directory directory;
   late CapcRepository repository;
@@ -142,6 +183,54 @@ void main() {
       expect(repository.businessId, canonical);
     },
   );
+
+  testWidgets('eliminación remota exige contraseña y confirmación escrita', (
+    tester,
+  ) async {
+    final controller = _DeletionController(repository: repository);
+    await tester.pumpWidget(
+      MaterialApp(home: RemoteIdentityPage(controller: controller)),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.widgetWithText(FilledButton, 'Eliminar cuenta remota'),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.widgetWithText(FilledButton, 'Eliminar cuenta remota'),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Eliminar definitivamente'), findsOneWidget);
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Correo remoto'),
+      'owner@example.test',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Contraseña remota'),
+      'remote-password-2026',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Escribe ELIMINAR para confirmar'),
+      'BORRAR',
+    );
+    await tester.tap(find.text('Eliminar definitivamente'));
+    await tester.pump();
+    expect(find.text('Escribe exactamente ELIMINAR.'), findsOneWidget);
+    expect(controller.deleted, isFalse);
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Escribe ELIMINAR para confirmar'),
+      'ELIMINAR',
+    );
+    await tester.tap(find.text('Eliminar definitivamente'));
+    await tester.pumpAndSettle();
+    expect(controller.deleted, isTrue);
+    expect(
+      find.textContaining('datos sincronizados fueron eliminados'),
+      findsOneWidget,
+    );
+  });
 
   testWidgets('pantalla remota offline cabe a 375 px con texto al 200%', (
     tester,

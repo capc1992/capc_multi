@@ -8,6 +8,8 @@ El esquema local vigente es 4. Las migraciones v1→v2→v3→v4 son conservador
 
 No se sincronizan usuarios locales, contraseñas, hashes, códigos de recuperación ni sesiones locales. La identidad remota usa credenciales independientes, acceso corto y renovación rotatoria ligados a `business_id`, `device_id` y permisos. PostgreSQL guarda solo hashes de tokens/códigos. Flutter guarda los valores en Android Keystore o Windows Credential Manager, nunca en SQLite, preferencias, configuración o logs. `X-Business-Id` solo se valida contra el token y no concede autorización.
 
+La cuenta remota puede eliminarse desde `Conexión remota > Eliminar cuenta remota` o desde `/eliminar-cuenta`. Se exige reautenticación con contraseña y confirmación `ELIMINAR`, con límite de intentos. PostgreSQL borra transaccionalmente negocio, propietarios remotos, sesiones, renovaciones, códigos, dispositivos, auditoría y todas las operaciones/proyecciones sincronizadas. Las credenciales seguras locales se limpian tras el éxito. La base SQLite local no se elimina: es información offline del dispositivo y la interfaz lo informa antes de confirmar.
+
 El primer dispositivo establece el ID canónico. Los adicionales usan un código temporal de un solo uso. La adopción automática se limita a instalaciones nuevas o sin movimientos y sin otra identidad segura; cualquier base con movimientos u otro negocio exige respaldo y migración explícita. Sin `CAPC_SYNC_URL`, todo continúa offline.
 
 ## Arquitectura y compatibilidad

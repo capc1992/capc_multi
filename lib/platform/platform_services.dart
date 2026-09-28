@@ -65,6 +65,8 @@ abstract interface class AppPlatformServices {
   Future<Directory> temporaryDirectory();
   Future<DeviceSummary> deviceSummary();
 
+  Future<void> openExternalUri(Uri uri);
+
   Future<SelectedDocument?> openDocument(DocumentType type);
 
   Future<SavedDocument?> saveDocument({

@@ -59,6 +59,81 @@ describe('sync API', () => {
     expect(response.body).not.toContain('access_token');
   });
 
+  it('serves public privacy and account deletion resources', async () => {
+    const { app } = await setup();
+    const privacy = await app.inject({ method: 'GET', url: '/privacidad' });
+    const deletion = await app.inject({ method: 'GET', url: '/eliminar-cuenta' });
+    expect(privacy.statusCode).toBe(200);
+    expect(privacy.headers['content-type']).toContain('text/html');
+    expect(privacy.body).toContain('Política de privacidad');
+    expect(deletion.statusCode).toBe(200);
+    expect(deletion.body).toContain('Eliminar cuenta remota');
+    expect(deletion.body).toContain('/api/v1/identity/delete-account');
+  });
+
+  it('deletes a remote account and all synchronized data', async () => {
+    const { app, headers } = await setup();
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/sync/push',
+      headers,
+      payload: { operations: [operation()] },
+    });
+    const invalid = await app.inject({
+      method: 'POST',
+      url: '/api/v1/identity/delete-account',
+      payload: {
+        business_id: businessA,
+        email: 'owner@example.test',
+        password: 'remote-password-2026',
+        confirmation: 'BORRAR',
+      },
+    });
+    expect(invalid.statusCode).toBe(400);
+    const deleted = await app.inject({
+      method: 'POST',
+      url: '/api/v1/identity/delete-account',
+      payload: {
+        business_id: businessA,
+        email: 'owner@example.test',
+        password: 'remote-password-2026',
+        confirmation: 'ELIMINAR',
+      },
+    });
+    expect(deleted.statusCode).toBe(204);
+    const formerSession = await app.inject({
+      method: 'GET',
+      url: `/api/v1/sync/pull?business_id=${businessA}&device_id=${device}&after=0`,
+      headers,
+    });
+    expect(formerSession.statusCode).toBe(401);
+
+    const replacement = await app.inject({
+      method: 'POST',
+      url: '/api/v1/identity/businesses',
+      payload: {
+        business_id: businessA,
+        business_name: 'Negocio nuevo',
+        email: 'owner@example.test',
+        password: 'remote-password-2026',
+        device_id: device,
+        device_name: 'Equipo principal',
+        platform: 'test',
+      },
+    });
+    expect(replacement.statusCode).toBe(201);
+    const identity = replacement.json<{ access_token: string }>();
+    const empty = await app.inject({
+      method: 'GET',
+      url: `/api/v1/sync/pull?business_id=${businessA}&device_id=${device}&after=0`,
+      headers: {
+        authorization: `Bearer ${identity.access_token}`,
+        'x-business-id': businessA,
+      },
+    });
+    expect(empty.json().operations).toEqual([]);
+  });
+
   it('processes the same operation once after a lost response', async () => {
     const { app, headers } = await setup();
     const body = { operations: [operation()] };

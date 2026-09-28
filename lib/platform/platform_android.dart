@@ -68,6 +68,16 @@ class AndroidPlatformServices implements AppPlatformServices {
   }
 
   @override
+  Future<void> openExternalUri(Uri uri) async {
+    if (uri.scheme != 'https') {
+      throw ArgumentError.value(uri, 'uri', 'CAPC solo abre enlaces HTTPS.');
+    }
+    await _channel.invokeMethod<void>('openExternalUrl', {
+      'url': uri.toString(),
+    });
+  }
+
+  @override
   Future<SelectedDocument?> openDocument(DocumentType type) async {
     final file = await openFile(
       acceptedTypeGroups: [

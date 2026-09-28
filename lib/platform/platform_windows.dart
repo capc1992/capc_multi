@@ -52,6 +52,19 @@ class WindowsPlatformServices implements AppPlatformServices {
   );
 
   @override
+  Future<void> openExternalUri(Uri uri) async {
+    if (uri.scheme != 'https') {
+      throw ArgumentError.value(uri, 'uri', 'CAPC solo abre enlaces HTTPS.');
+    }
+    final process = await Process.start('explorer.exe', [
+      uri.toString(),
+    ], mode: ProcessStartMode.detached);
+    if (process.pid <= 0) {
+      throw const FileSystemException('No se pudo abrir el enlace.');
+    }
+  }
+
+  @override
   Future<SelectedDocument?> openDocument(DocumentType type) async {
     final file = await openFile(
       acceptedTypeGroups: [

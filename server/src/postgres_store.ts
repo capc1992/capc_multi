@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 
 import type { PullPage, PushAcknowledgement, SyncOperation } from './protocol.js';
-import { IdempotencyConflictError, type SyncStore } from './store.js';
+import { BusinessUnavailableError, IdempotencyConflictError, type SyncStore } from './store.js';
 
 function digest(operation: SyncOperation): string {
   return createHash('sha256').update(JSON.stringify(operation)).digest('hex');
@@ -20,6 +20,14 @@ export class PostgresSyncStore implements SyncStore {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
+        `business:${operation.business_id}`,
+      ]);
+      const business = await client.query(
+        'SELECT 1 FROM businesses WHERE id=$1 AND disabled_at IS NULL',
+        [operation.business_id],
+      );
+      if (business.rowCount !== 1) throw new BusinessUnavailableError();
       const hash = digest(operation);
       const inserted = await client.query<{ server_cursor: string }>(
         `INSERT INTO sync_operations
@@ -97,6 +105,31 @@ export class PostgresSyncStore implements SyncStore {
       next_cursor: rows.at(-1)?.server_cursor ?? after,
       has_more: hasMore,
     };
+  }
+
+  async deleteBusiness(businessId: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
+        `business:${businessId}`,
+      ]);
+      for (const table of [
+        'sync_conflicts',
+        'sync_inventory_movements',
+        'sync_financial_events',
+        'sync_entities',
+        'sync_operations',
+      ]) {
+        await client.query(`DELETE FROM ${table} WHERE business_id=$1`, [businessId]);
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async close(): Promise<void> {

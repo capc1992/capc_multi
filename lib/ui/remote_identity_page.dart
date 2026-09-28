@@ -19,6 +19,7 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
   final _linkCode = TextEditingController();
   bool _busy = false;
   String? _error;
+  String? _success;
   List<RemoteDevice> _devices = const [];
 
   @override
@@ -41,6 +42,7 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
     setState(() {
       _busy = true;
       _error = null;
+      _success = null;
     });
     try {
       await action();
@@ -82,6 +84,21 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
             _authentication()
           else
             _connected(),
+          if (_success != null) ...[
+            const SizedBox(height: 16),
+            Semantics(
+              liveRegion: true,
+              child: Text(
+                _success!,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.primary,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 16),
+          _privacyAndDeletionLinks(),
           if (_error != null) ...[
             const SizedBox(height: 16),
             Semantics(
@@ -251,6 +268,69 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
             ..._devices.map(_deviceTile),
         ],
       ),
+      const SizedBox(height: 16),
+      _card(
+        title: 'Eliminar cuenta remota',
+        icon: Icons.delete_forever_outlined,
+        children: [
+          const Text(
+            'Elimina definitivamente la identidad, los dispositivos y los datos sincronizados del servidor. La base local de este dispositivo se conserva.',
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Antes de continuar, crea un respaldo si necesitas conservar una copia independiente.',
+          ),
+          const SizedBox(height: 16),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Semantics(
+              button: true,
+              label: 'Eliminar definitivamente la cuenta remota',
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(context).colorScheme.error,
+                  foregroundColor: Theme.of(context).colorScheme.onError,
+                  minimumSize: const Size(48, 48),
+                ),
+                onPressed: _busy ? null : _confirmDeleteAccount,
+                icon: const Icon(Icons.delete_forever_outlined),
+                label: const Text('Eliminar cuenta remota'),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ],
+  );
+
+  Widget _privacyAndDeletionLinks() => _card(
+    title: 'Privacidad y datos',
+    icon: Icons.privacy_tip_outlined,
+    children: [
+      const Text(
+        'Consulta cómo se manejan los datos o solicita la eliminación desde la web, incluso si ya no tienes la aplicación instalada.',
+      ),
+      const SizedBox(height: 16),
+      Wrap(
+        spacing: 12,
+        runSpacing: 12,
+        children: [
+          OutlinedButton.icon(
+            onPressed: _busy
+                ? null
+                : () => _run(widget.controller.openPrivacyPolicy),
+            icon: const Icon(Icons.policy_outlined),
+            label: const Text('Política de privacidad'),
+          ),
+          OutlinedButton.icon(
+            onPressed: _busy
+                ? null
+                : () => _run(widget.controller.openExternalDeletion),
+            icon: const Icon(Icons.open_in_new),
+            label: const Text('Eliminar desde la web'),
+          ),
+        ],
+      ),
     ],
   );
 
@@ -380,6 +460,28 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
     if (confirmed) await _run(() => widget.controller.revokeDevice(device.id));
   }
 
+  Future<void> _confirmDeleteAccount() async {
+    final credentials = await showDialog<_DeleteAccountCredentials>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _DeleteAccountDialog(),
+    );
+    if (credentials == null) return;
+    await _run(() async {
+      await widget.controller.deleteAccount(
+        email: credentials.email,
+        password: credentials.password,
+      );
+      if (mounted) {
+        setState(() {
+          _devices = const [];
+          _success =
+              'La cuenta remota y sus datos sincronizados fueron eliminados. Los datos locales permanecen en este dispositivo.';
+        });
+      }
+    });
+  }
+
   Widget _card({
     required String title,
     required IconData icon,
@@ -408,5 +510,121 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
         ],
       ),
     ),
+  );
+}
+
+class _DeleteAccountCredentials {
+  const _DeleteAccountCredentials(this.email, this.password);
+  final String email;
+  final String password;
+}
+
+class _DeleteAccountDialog extends StatefulWidget {
+  const _DeleteAccountDialog();
+
+  @override
+  State<_DeleteAccountDialog> createState() => _DeleteAccountDialogState();
+}
+
+class _DeleteAccountDialogState extends State<_DeleteAccountDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  final _confirmation = TextEditingController();
+
+  @override
+  void dispose() {
+    _email.dispose();
+    _password.dispose();
+    _confirmation.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    icon: Icon(
+      Icons.warning_amber_rounded,
+      color: Theme.of(context).colorScheme.error,
+      size: 36,
+    ),
+    title: const Text('Eliminar cuenta remota'),
+    content: SizedBox(
+      width: 460,
+      child: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Se borrarán permanentemente la cuenta, sesiones, dispositivos y datos sincronizados del servidor. La base SQLite local permanecerá en este dispositivo.',
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _email,
+                autofocus: true,
+                keyboardType: TextInputType.emailAddress,
+                autofillHints: const [AutofillHints.username],
+                decoration: const InputDecoration(labelText: 'Correo remoto'),
+                validator: (value) =>
+                    value == null ||
+                        !value.contains('@') ||
+                        value.trim().length < 5
+                    ? 'Escribe el correo de la cuenta remota.'
+                    : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _password,
+                obscureText: true,
+                enableSuggestions: false,
+                autocorrect: false,
+                autofillHints: const [AutofillHints.password],
+                decoration: const InputDecoration(
+                  labelText: 'Contraseña remota',
+                ),
+                validator: (value) => value == null || value.isEmpty
+                    ? 'Escribe la contraseña remota.'
+                    : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _confirmation,
+                textCapitalization: TextCapitalization.characters,
+                autocorrect: false,
+                decoration: const InputDecoration(
+                  labelText: 'Escribe ELIMINAR para confirmar',
+                ),
+                validator: (value) => value?.trim() == 'ELIMINAR'
+                    ? null
+                    : 'Escribe exactamente ELIMINAR.',
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Conservar cuenta'),
+      ),
+      FilledButton(
+        style: FilledButton.styleFrom(
+          backgroundColor: Theme.of(context).colorScheme.error,
+          foregroundColor: Theme.of(context).colorScheme.onError,
+        ),
+        onPressed: () {
+          if (_formKey.currentState!.validate()) {
+            Navigator.pop(
+              context,
+              _DeleteAccountCredentials(_email.text.trim(), _password.text),
+            );
+          }
+        },
+        child: const Text('Eliminar definitivamente'),
+      ),
+    ],
   );
 }

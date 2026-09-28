@@ -5,6 +5,7 @@ import {
   ownerPermissions,
   type AuthIdentity,
   type CreateBusinessInput,
+  type DeleteBusinessInput,
   type DeviceRecord,
   type IdentityStore,
   type IssuedIdentity,
@@ -85,6 +86,33 @@ export class MemoryIdentityStore implements IdentityStore {
 
   async logout(identity: AuthIdentity): Promise<void> {
     for (const [token, saved] of this.access) if (saved.sessionId === identity.sessionId) this.access.delete(token);
+  }
+
+  async deleteBusiness(input: DeleteBusinessInput, _requestKey?: string): Promise<string> {
+    const matches = this.accounts.filter((item) =>
+      item.email === input.email.toLowerCase() &&
+      item.password === input.password &&
+      (input.businessId === undefined || item.businessId === input.businessId));
+    if (matches.length !== 1) {
+      throw new IdentityError(matches.length > 1 ? 'business_id_required' : 'invalid_credentials', matches.length > 1 ? 409 : 401);
+    }
+    const businessId = matches[0]!.businessId;
+    for (let index = this.accounts.length - 1; index >= 0; index--) {
+      if (this.accounts[index]!.businessId === businessId) this.accounts.splice(index, 1);
+    }
+    for (const [deviceId, device] of this.devices) {
+      if (device.businessId === businessId) this.devices.delete(deviceId);
+    }
+    for (const [token, identity] of this.access) {
+      if (identity.businessId === businessId) this.access.delete(token);
+    }
+    for (const [token, saved] of this.refreshTokens) {
+      if (saved.identity.businessId === businessId) this.refreshTokens.delete(token);
+    }
+    for (const [code, link] of this.links) {
+      if (link.businessId === businessId) this.links.delete(code);
+    }
+    return businessId;
   }
 
   async close(): Promise<void> {}
