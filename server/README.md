@@ -77,3 +77,14 @@ npm audit --omit=dev
 ```
 
 Sin `DATABASE_URL`, Vitest omite únicamente `postgres.integration.test.ts`; no debe interpretarse como aprobación SQL. El workflow `.github/workflows/cloud-sync-identity.yml` crea PostgreSQL 16 desde cero, aplica migraciones dos veces, prueba identidad/sincronización, verifica rollback/reaplicación, ejecuta auditoría de producción y compila el servidor.
+
+## Despliegue de producción en el VPS
+
+Con `api.capcmultiservicios.site` apuntando a `2.25.80.190`, clona la rama de producción y ejecuta como `root`:
+
+```bash
+chmod +x deploy/vps/deploy-production.sh deploy/vps/capc-sync-backup.sh
+./deploy/vps/deploy-production.sh
+```
+
+El instalador conserva `/etc/capc-sync/capc-sync.env` cuando ya existe. Configura PostgreSQL, migraciones, compilación, PM2, Nginx, certificado TLS, respaldo diario con retención local de 14 días y comprueba las tres rutas HTTPS públicas. Nunca muestra ni guarda secretos dentro del repositorio.
