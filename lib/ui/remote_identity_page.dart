@@ -2,11 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../sync/remote_identity.dart';
+import '../sync/sync_coordinator.dart';
+import '../sync/sync_models.dart';
 import 'ui_shared.dart';
 
 class RemoteIdentityPage extends StatefulWidget {
-  const RemoteIdentityPage({super.key, required this.controller});
+  const RemoteIdentityPage({
+    super.key,
+    required this.controller,
+    this.syncCoordinator,
+  });
   final RemoteIdentityController controller;
+  final SyncCoordinator? syncCoordinator;
 
   @override
   State<RemoteIdentityPage> createState() => _RemoteIdentityPageState();
@@ -25,11 +32,13 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
   @override
   void initState() {
     super.initState();
+    widget.syncCoordinator?.addListener(_syncChanged);
     _reload();
   }
 
   @override
   void dispose() {
+    widget.syncCoordinator?.removeListener(_syncChanged);
     _businessName.dispose();
     _email.dispose();
     _password.dispose();
@@ -37,7 +46,14 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
     super.dispose();
   }
 
-  Future<void> _run(Future<void> Function() action) async {
+  void _syncChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _run(
+    Future<void> Function() action, {
+    bool syncAfter = false,
+  }) async {
     if (_busy) return;
     setState(() {
       _busy = true;
@@ -46,6 +62,9 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
     });
     try {
       await action();
+      if (syncAfter) {
+        await widget.syncCoordinator?.syncNow(silent: true);
+      }
       _password.clear();
       await _reload();
     } catch (error) {
@@ -64,6 +83,7 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
         if (mounted) setState(() => _error = error.toString());
       }
     }
+    await widget.syncCoordinator?.refreshStatus();
     if (mounted) setState(() {});
   }
 
@@ -174,6 +194,7 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
                       email: _email.text,
                       password: _password.text,
                     ),
+                    syncAfter: true,
                   ),
             icon: const Icon(Icons.cloud_done_outlined),
             label: const Text('Conectar negocio'),
@@ -218,8 +239,10 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
           FilledButton.icon(
             onPressed: _busy || _linkCode.text.trim().isEmpty
                 ? null
-                : () =>
-                      _run(() => widget.controller.linkDevice(_linkCode.text)),
+                : () => _run(
+                    () => widget.controller.linkDevice(_linkCode.text),
+                    syncAfter: true,
+                  ),
             icon: const Icon(Icons.link),
             label: const Text('Vincular dispositivo'),
           ),
@@ -258,6 +281,10 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
         ],
       ),
       const SizedBox(height: 16),
+      if (widget.syncCoordinator != null) ...[
+        _synchronizationCard(),
+        const SizedBox(height: 16),
+      ],
       _card(
         title: 'Dispositivos autorizados',
         icon: Icons.devices_outlined,
@@ -302,6 +329,83 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
       ),
     ],
   );
+
+  Widget _synchronizationCard() {
+    final coordinator = widget.syncCoordinator!;
+    final snapshot = coordinator.snapshot;
+    final status = coordinator.running
+        ? 'Sincronizando…'
+        : switch (snapshot?.status) {
+            SyncStatus.synced => 'Sincronizado',
+            SyncStatus.pending => 'Pendiente de sincronizar',
+            SyncStatus.error => 'Sin conexión; se reintentará automáticamente',
+            SyncStatus.syncing => 'Sincronizando…',
+            SyncStatus.localOnly || null => 'Preparando sincronización',
+          };
+    final lastSuccess = snapshot?.lastSuccessAt;
+    return _card(
+      title: 'Sincronización',
+      icon: coordinator.running
+          ? Icons.sync
+          : snapshot?.status == SyncStatus.error
+          ? Icons.cloud_off_outlined
+          : Icons.cloud_done_outlined,
+      children: [
+        Semantics(
+          liveRegion: true,
+          label: 'Estado de sincronización: $status',
+          child: Text(
+            status,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          snapshot == null
+              ? 'Consultando operaciones pendientes.'
+              : snapshot.pending == 0
+              ? 'No hay operaciones pendientes en este dispositivo.'
+              : '${snapshot.pending} operaciones permanecen seguras en este dispositivo hasta recuperar Internet.',
+        ),
+        if (lastSuccess != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            'Última sincronización: ${DateFormat('dd/MM/yyyy HH:mm').format(lastSuccess.toLocal())}',
+          ),
+        ],
+        if (snapshot?.lastError != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            snapshot!.lastError!,
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
+          ),
+        ],
+        const SizedBox(height: 16),
+        FilledButton.icon(
+          onPressed: _busy || coordinator.running ? null : _syncNow,
+          icon: coordinator.running
+              ? const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.sync),
+          label: Text(
+            coordinator.running ? 'Sincronizando…' : 'Sincronizar ahora',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _syncNow() async {
+    await _run(() async {
+      final result = await widget.syncCoordinator!.syncNow();
+      if (result == null) return;
+      _success = result.pushed == 0 && result.received == 0
+          ? 'Todo está sincronizado.'
+          : 'Sincronización completa: ${result.pushed} enviados y ${result.applied} aplicados.';
+    });
+  }
 
   Widget _privacyAndDeletionLinks() => _card(
     title: 'Privacidad y datos',
@@ -408,6 +512,7 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
           email: _email.text,
           password: _password.text,
         ),
+        syncAfter: true,
       );
     }
   }

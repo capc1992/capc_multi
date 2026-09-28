@@ -27,7 +27,7 @@ export const OperationSchema = z
     business_id: z.string().uuid(),
     device_id: z.string().uuid(),
     operation_id: z.string().uuid(),
-    type: z.string().regex(/^[a-z][a-z0-9]*(?:\.[a-zA-Z0-9]+)+$/).max(80),
+    type: z.string().regex(/^[a-z][a-z0-9]*(?:\.[a-zA-Z0-9]+)*$/).max(80),
     schema_version: z.literal(1),
     occurred_at: z.iso.datetime({ offset: true }),
     content: z.record(z.string(), z.unknown()),

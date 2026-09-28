@@ -3,6 +3,9 @@ import 'dart:io';
 import 'package:capc_multiservicio/data/repository.dart';
 import 'package:capc_multiservicio/sync/remote_identity.dart';
 import 'package:capc_multiservicio/sync/secure_credentials.dart';
+import 'package:capc_multiservicio/sync/sync_coordinator.dart';
+import 'package:capc_multiservicio/sync/sync_engine.dart';
+import 'package:capc_multiservicio/sync/sync_models.dart';
 import 'package:capc_multiservicio/sync/sync_transport.dart';
 import 'package:capc_multiservicio/ui/remote_identity_page.dart';
 import 'package:flutter/material.dart';
@@ -11,7 +14,9 @@ import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart' as native;
 
 class _DeletionController extends RemoteIdentityController {
-  _DeletionController({required super.repository})
+  // The explicit constructor also supplies the test-only remote URL.
+  // ignore: use_super_parameters
+  _DeletionController({required CapcRepository repository})
     : _session = RemoteSession(
         businessId: repository.businessId,
         deviceId: repository.deviceId,
@@ -20,6 +25,12 @@ class _DeletionController extends RemoteIdentityController {
         accessExpiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
         refreshExpiresAt: DateTime.now().toUtc().add(const Duration(days: 1)),
         permissions: const ['devices:manage'],
+      ),
+      super(
+        repository: repository,
+        configuration: SyncConfiguration(
+          baseUri: Uri.parse('https://api.example.test'),
+        ),
       );
 
   final RemoteSession _session;
@@ -48,6 +59,28 @@ class _DeletionController extends RemoteIdentityController {
     expect(email, 'owner@example.test');
     expect(password, 'remote-password-2026');
     deleted = true;
+  }
+}
+
+class _FakeSyncEngine extends SyncEngine {
+  _FakeSyncEngine({required this.testRepository, required super.configuration})
+    : super(repository: testRepository);
+
+  final CapcRepository testRepository;
+  int calls = 0;
+
+  @override
+  Future<SyncRunResult> runOnce({int batchSize = 100}) async {
+    calls++;
+    await testRepository.setSyncStatus(SyncStatus.synced, successful: true);
+    return const SyncRunResult(
+      enabled: true,
+      pushed: 0,
+      received: 0,
+      applied: 0,
+      conflicts: 0,
+      cursor: 0,
+    );
   }
 }
 
@@ -230,6 +263,31 @@ void main() {
       find.textContaining('datos sincronizados fueron eliminados'),
       findsOneWidget,
     );
+  });
+
+  test('coordinador ejecuta sincronización manual y actualiza el estado', () async {
+    final controller = _DeletionController(repository: repository);
+    final configuration = SyncConfiguration(
+      baseUri: controller.configuration.baseUri,
+      tokenProvider: controller.accessToken,
+    );
+    final engine = _FakeSyncEngine(
+      testRepository: repository,
+      configuration: configuration,
+    );
+    final coordinator = SyncCoordinator(
+      repository: repository,
+      identity: controller,
+      retryInterval: const Duration(days: 1),
+      engine: engine,
+    );
+    addTearDown(coordinator.dispose);
+    await coordinator.refreshStatus();
+    final result = await coordinator.syncNow();
+    expect(engine.calls, 1);
+    expect(result, isNotNull);
+    expect(coordinator.snapshot!.status, SyncStatus.synced);
+    expect(coordinator.running, isFalse);
   });
 
   testWidgets('pantalla remota offline cabe a 375 px con texto al 200%', (

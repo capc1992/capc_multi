@@ -213,6 +213,13 @@ export class PostgresIdentityStore implements IdentityStore {
       if (!['new', 'no_movements'].includes(input.localState)) {
         throw new IdentityError('local_data_requires_migration', 409);
       }
+      const occupied = await client.query(
+        `SELECT business_id FROM devices WHERE id=$1 AND revoked_at IS NULL`,
+        [input.deviceId],
+      );
+      if (occupied.rowCount && occupied.rows[0]?.business_id !== link.business_id) {
+        throw new IdentityError('device_belongs_to_another_business', 409);
+      }
       if (input.localBusinessId !== link.business_id) {
         const localIdentity = await client.query(
           'SELECT 1 FROM businesses WHERE id=$1',
@@ -224,13 +231,6 @@ export class PostgresIdentityStore implements IdentityStore {
             409,
           );
         }
-      }
-      const occupied = await client.query(
-        `SELECT business_id FROM devices WHERE id=$1 AND revoked_at IS NULL`,
-        [input.deviceId],
-      );
-      if (occupied.rowCount && occupied.rows[0]?.business_id !== link.business_id) {
-        throw new IdentityError('device_belongs_to_another_business', 409);
       }
       await client.query(
         `INSERT INTO devices (id,business_id,name,platform,authorized_by)
@@ -264,9 +264,13 @@ export class PostgresIdentityStore implements IdentityStore {
       id: string; name: string; platform: string; created_at: Date; last_seen_at: Date | null; revoked_at: Date | null;
     }>(
       `SELECT d.id,d.name,d.platform,d.created_at,
-              GREATEST(d.last_seen_at,max(s.last_seen_at)) AS last_seen_at,d.revoked_at
-       FROM devices d LEFT JOIN sessions s ON s.device_id=d.id AND s.business_id=d.business_id
-       WHERE d.business_id=$1 GROUP BY d.id ORDER BY d.created_at`,
+              GREATEST(
+                d.last_seen_at,
+                (SELECT max(s.last_seen_at) FROM sessions s
+                 WHERE s.device_id=d.id AND s.business_id=d.business_id)
+              ) AS last_seen_at,
+              d.revoked_at
+       FROM devices d WHERE d.business_id=$1 ORDER BY d.created_at`,
       [identity.businessId],
     );
     return result.rows.map((row) => ({

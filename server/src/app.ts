@@ -1,15 +1,16 @@
-import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyServerOptions } from 'fastify';
 import { z, ZodError } from 'zod';
 
 import { IdentityError, requirePermission, type AuthIdentity, type IdentityStore, type IssuedIdentity } from './identity.js';
 import { accountDeletionPage, privacyPage } from './public_pages.js';
 import { PullQuerySchema, PushSchema } from './protocol.js';
 import { BusinessUnavailableError, IdempotencyConflictError, type SyncStore } from './store.js';
+import { requestErrorDiagnostic } from './request_errors.js';
 
 interface BuildAppOptions {
   store: SyncStore;
   identityStore: IdentityStore;
-  logger?: boolean | { level: string; redact: string[] };
+  logger?: FastifyServerOptions['logger'];
 }
 
 const DeviceSchema = z.object({
@@ -187,12 +188,17 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     return options.store.pull(identity.businessId, query.after, query.limit);
   });
 
-  app.setErrorHandler(async (error, _request, reply) => {
+  app.setErrorHandler(async (error, request, reply) => {
     if (error instanceof ZodError) return reply.code(400).send({ error: 'invalid_request', issues: error.issues });
     if (error instanceof IdentityError) return reply.code(error.statusCode).send({ error: error.code });
     if (error instanceof IdempotencyConflictError) return reply.code(409).send({ error: 'operation_id_conflict' });
     if (error instanceof BusinessUnavailableError) return reply.code(410).send({ error: 'business_unavailable' });
-    app.log.error({ error_type: error instanceof Error ? error.name : 'UnknownError' }, 'request_failed');
+    const diagnostic = requestErrorDiagnostic(error);
+    if (diagnostic.status_code < 500) {
+      request.log.warn(diagnostic, 'request_rejected');
+      return reply.code(diagnostic.status_code).send({ error: 'invalid_request', code: diagnostic.error_code });
+    }
+    request.log.error(diagnostic, 'request_failed');
     return reply.code(500).send({ error: 'internal_error' });
   });
 

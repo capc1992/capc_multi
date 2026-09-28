@@ -6,6 +6,7 @@ import 'data/repository.dart';
 import 'platform/platform_services.dart';
 import 'services/backup_transfer.dart';
 import 'sync/remote_identity.dart';
+import 'sync/sync_coordinator.dart';
 import 'ui/capc_app.dart';
 import 'update/update_runtime.dart';
 
@@ -17,7 +18,16 @@ Future<void> main() async {
     final repository = await CapcRepository.open(databasePath);
     final remoteIdentity = RemoteIdentityController(repository: repository);
     await remoteIdentity.initialize();
-    _runCapc(repository, remoteIdentity: remoteIdentity);
+    final syncCoordinator = SyncCoordinator(
+      repository: repository,
+      identity: remoteIdentity,
+    );
+    await syncCoordinator.initialize();
+    _runCapc(
+      repository,
+      remoteIdentity: remoteIdentity,
+      syncCoordinator: syncCoordinator,
+    );
   } catch (error) {
     runApp(
       _StartupFailure(message: error.toString(), databasePath: databasePath),
@@ -28,12 +38,14 @@ Future<void> main() async {
 void _runCapc(
   CapcRepository repository, {
   RemoteIdentityController? remoteIdentity,
+  SyncCoordinator? syncCoordinator,
 }) {
   final updates = UpdateRuntime.create(databasePath: repository.databasePath);
   runApp(
     CapcApp(
       repository: repository,
       remoteIdentity: remoteIdentity,
+      syncCoordinator: syncCoordinator,
       updateController: updates,
     ),
   );
@@ -78,7 +90,18 @@ class _StartupFailureState extends State<_StartupFailure> {
       );
       _password.clear();
       final repository = await CapcRepository.open(widget.databasePath!);
-      _runCapc(repository);
+      final remoteIdentity = RemoteIdentityController(repository: repository);
+      await remoteIdentity.initialize();
+      final syncCoordinator = SyncCoordinator(
+        repository: repository,
+        identity: remoteIdentity,
+      );
+      await syncCoordinator.initialize();
+      _runCapc(
+        repository,
+        remoteIdentity: remoteIdentity,
+        syncCoordinator: syncCoordinator,
+      );
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     } finally {

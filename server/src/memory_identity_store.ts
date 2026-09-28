@@ -63,11 +63,11 @@ export class MemoryIdentityStore implements IdentityStore {
     const link = this.links.get(input.code.toUpperCase());
     if (!link || link.expiresAt <= Date.now()) throw new IdentityError('link_code_invalid_or_expired', 409);
     if (link.used) throw new IdentityError('link_code_used', 409);
+    const existing = this.devices.get(input.deviceId);
+    if (existing && existing.businessId !== link.businessId) throw new IdentityError('device_belongs_to_another_business', 409);
     if (input.localBusinessId !== link.businessId && this.accounts.some((item) => item.businessId === input.localBusinessId)) {
       throw new IdentityError('local_business_belongs_to_another_remote_business', 409);
     }
-    const existing = this.devices.get(input.deviceId);
-    if (existing && existing.businessId !== link.businessId) throw new IdentityError('device_belongs_to_another_business', 409);
     link.used = true;
     this.devices.set(input.deviceId, this.device(input, link.businessId));
     return this.issue(link.businessId, input.deviceId, link.ownerId);

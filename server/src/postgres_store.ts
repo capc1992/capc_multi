@@ -320,7 +320,7 @@ function inventoryMovements(operation: SyncOperation): Array<Record<string, unkn
 }
 
 function isFinancial(type: string): boolean {
-  return /^(sale\.|payment\.|purchase\.|supplier\.|expense\.|cash\.|work\.advance|quote\.converted)/.test(type);
+  return /^(sale\.|payment\.|purchase\.|supplier\.|expense(?:\.|$)|cash\.|work\.advance|quote\.converted)/.test(type);
 }
 
 function isTerminalQuoteStatus(value: unknown): boolean {

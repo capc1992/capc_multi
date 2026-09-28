@@ -13,6 +13,8 @@ import '../services/document_preview.dart';
 import '../services/reporting.dart';
 import '../services/spreadsheets.dart';
 import '../sync/remote_identity.dart';
+import '../sync/sync_coordinator.dart';
+import '../sync/sync_models.dart';
 import '../update/update_controller.dart';
 import 'access_gate.dart';
 import 'account_security.dart';
@@ -40,10 +42,12 @@ class CapcApp extends StatelessWidget {
     super.key,
     required this.repository,
     this.remoteIdentity,
+    this.syncCoordinator,
     this.updateController,
   });
   final CapcRepository repository;
   final RemoteIdentityController? remoteIdentity;
+  final SyncCoordinator? syncCoordinator;
   final UpdateController? updateController;
 
   @override
@@ -132,6 +136,7 @@ class CapcApp extends StatelessWidget {
           remoteIdentity:
               remoteIdentity ??
               RemoteIdentityController(repository: repository),
+          syncCoordinator: syncCoordinator,
           updateController: updateController,
         ),
       ),
@@ -144,11 +149,13 @@ class _CapcHome extends StatefulWidget {
     required this.repository,
     required this.onLogout,
     required this.remoteIdentity,
+    required this.syncCoordinator,
     required this.updateController,
   });
   final CapcRepository repository;
   final VoidCallback onLogout;
   final RemoteIdentityController remoteIdentity;
+  final SyncCoordinator? syncCoordinator;
   final UpdateController? updateController;
   @override
   State<_CapcHome> createState() => _CapcHomeState();
@@ -203,6 +210,7 @@ class _CapcHomeState extends State<_CapcHome> {
   void initState() {
     super.initState();
     widget.remoteIdentity.initialize();
+    widget.syncCoordinator?.addListener(_syncChanged);
     final today = _day(_bogota(DateTime.now()));
     _reportFrom = DateTime(today.year, today.month, 1);
     _reportTo = today;
@@ -212,6 +220,7 @@ class _CapcHomeState extends State<_CapcHome> {
 
   @override
   void dispose() {
+    widget.syncCoordinator?.removeListener(_syncChanged);
     for (final c in [
       _saleSearch,
       _inventorySearch,
@@ -224,6 +233,10 @@ class _CapcHomeState extends State<_CapcHome> {
       c.dispose();
     }
     super.dispose();
+  }
+
+  void _syncChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _refresh() async {
@@ -270,6 +283,7 @@ class _CapcHomeState extends State<_CapcHome> {
 
   Future<void> _refreshAll() async {
     await _refresh();
+    await widget.syncCoordinator?.refreshStatus();
     if (mounted) setState(() => _managementRevision++);
   }
 
@@ -283,6 +297,63 @@ class _CapcHomeState extends State<_CapcHome> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _syncNow() async {
+    final result = await widget.syncCoordinator?.syncNow();
+    await _refreshAll();
+    if (result != null) {
+      _notify(
+        result.pushed == 0 && result.received == 0
+            ? 'Todo está sincronizado.'
+            : 'Sincronización completa: ${result.pushed} enviados y ${result.applied} aplicados.',
+      );
+    }
+  }
+
+  Widget _syncTag() {
+    final coordinator = widget.syncCoordinator;
+    if (coordinator == null || !coordinator.enabled) {
+      return const _Tag(
+        'Guardado en este dispositivo',
+        icon: Icons.offline_pin_outlined,
+      );
+    }
+    if (!widget.remoteIdentity.connected) {
+      return const _Tag(
+        'Conecta para sincronizar',
+        warning: true,
+        icon: Icons.cloud_off_outlined,
+      );
+    }
+    if (coordinator.running) {
+      return const _Tag('Sincronizando…', icon: Icons.sync);
+    }
+    final snapshot = coordinator.snapshot;
+    if (snapshot == null) {
+      return const _Tag(
+        'Preparando sincronización',
+        warning: true,
+        icon: Icons.cloud_queue_outlined,
+      );
+    }
+    if (snapshot.status == SyncStatus.error) {
+      return _Tag(
+        snapshot.pending == 0
+            ? 'Sin conexión'
+            : '${snapshot.pending} pendientes',
+        warning: true,
+        icon: Icons.cloud_off_outlined,
+      );
+    }
+    if (snapshot.pending > 0) {
+      return _Tag(
+        '${snapshot.pending} pendientes',
+        warning: true,
+        icon: Icons.cloud_upload_outlined,
+      );
+    }
+    return const _Tag('Sincronizado', icon: Icons.cloud_done_outlined);
   }
 
   Product? _product(String id) {
@@ -380,12 +451,30 @@ class _CapcHomeState extends State<_CapcHome> {
                                 ],
                               ),
                             ),
-                            if (constraints.maxWidth > 780)
-                              const _Tag(
-                                'Guardado en este dispositivo',
-                                icon: Icons.offline_pin_outlined,
-                              ),
+                            if (constraints.maxWidth > 780) _syncTag(),
                             const SizedBox(width: 8),
+                            if (widget.syncCoordinator?.enabled ?? false)
+                              IconButton(
+                                tooltip: widget.remoteIdentity.connected
+                                    ? 'Sincronizar ahora'
+                                    : 'Conecta el negocio para sincronizar',
+                                onPressed:
+                                    _busy ||
+                                        _loading ||
+                                        !widget.remoteIdentity.connected ||
+                                        (widget.syncCoordinator?.running ??
+                                            false)
+                                    ? null
+                                    : () => _run(_syncNow),
+                                icon: widget.syncCoordinator?.running ?? false
+                                    ? const SizedBox.square(
+                                        dimension: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.cloud_sync_outlined),
+                              ),
                             IconButton(
                               tooltip: 'Actualizar datos',
                               onPressed: _busy || _loading
@@ -2173,6 +2262,7 @@ class _CapcHomeState extends State<_CapcHome> {
                       MaterialPageRoute<void>(
                         builder: (_) => RemoteIdentityPage(
                           controller: widget.remoteIdentity,
+                          syncCoordinator: widget.syncCoordinator,
                         ),
                       ),
                     ),
