@@ -42,10 +42,10 @@ Auditoría actual:
 
 - `versionName` y `versionCode` provienen de `pubspec.yaml`.
 - La compilación release exige variables de firma; solo un `dry_run` explícito puede usar firma debug.
-- El `applicationId` todavía es `com.example.capc_multi`. Debe definirse el identificador definitivo, actualizar el canal nativo y registrar la aplicación en Play Console **antes de la primera publicación**. No se cambió automáticamente porque el identificador de Play es una decisión irreversible.
+- El `applicationId` definitivo es `site.capcmultiservicios.capc`. Debe conservarse en Play Console y en todas las publicaciones futuras.
 - Al crear la aplicación definitiva, habilitar Play App Signing y conservar de forma segura la clave de carga. No guardar keystores ni contraseñas en Git.
 
-Mientras el identificador siga siendo de ejemplo, la publicación real debe considerarse bloqueada; la compilación y verificación `dry_run` sí pueden utilizarse.
+La publicación real continúa bloqueada hasta configurar la firma de producción y registrar este identificador en Play Console; la compilación y verificación `dry_run` sí pueden utilizarse.
 
 ## Publicar una versión
 

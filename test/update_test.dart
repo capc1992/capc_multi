@@ -17,7 +17,7 @@ void main() {
   final installed = AppVersion(
     versionName: '0.4.0',
     buildNumber: 7,
-    packageName: 'com.example.capc_multi',
+    packageName: 'site.capcmultiservicios.capc',
   );
 
   setUp(() async {
@@ -484,7 +484,7 @@ class _FakeAndroidGateway implements AndroidUpdateGateway {
     flexibleAllowedPreconditions: const [],
     availableVersionCode: 8,
     installStatus: play.InstallStatus.unknown,
-    packageName: 'com.example.capc_multi',
+    packageName: 'site.capcmultiservicios.capc',
     clientVersionStalenessDays: 1,
     updatePriority: priority,
   );

@@ -66,6 +66,7 @@ describe('sync API', () => {
     expect(privacy.statusCode).toBe(200);
     expect(privacy.headers['content-type']).toContain('text/html');
     expect(privacy.body).toContain('Política de privacidad');
+    expect(privacy.body).toContain('nicolasperdomoliz@gmail.com');
     expect(deletion.statusCode).toBe(200);
     expect(deletion.body).toContain('Eliminar cuenta remota');
     expect(deletion.body).toContain('/api/v1/identity/delete-account');

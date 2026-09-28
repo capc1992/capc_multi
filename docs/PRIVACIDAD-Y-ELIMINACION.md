@@ -21,7 +21,7 @@ El formulario web permite omitir el identificador del negocio cuando el correo y
 ## Antes de Google Play
 
 - desplegar la API y verificar ambas páginas mediante HTTPS público;
-- confirmar que `internetcapc@gmail.com` sea el contacto de privacidad correcto o reemplazarlo;
+- verificar que `nicolasperdomoliz@gmail.com` reciba correctamente las consultas de privacidad;
 - completar la sección Seguridad de los datos y registrar la URL de eliminación en Play Console;
 - revisar la política con asesoría legal según los datos y obligaciones reales del negocio;
 - probar eliminación desde la app y desde la web contra un negocio ficticio, nunca contra la base real.

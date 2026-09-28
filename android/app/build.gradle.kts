@@ -18,7 +18,7 @@ val capcAllowDebugReleaseSigning =
     System.getenv("CAPC_ALLOW_DEBUG_RELEASE_SIGNING")?.equals("true", ignoreCase = true) == true
 
 android {
-    namespace = "com.example.capc_multi"
+    namespace = "site.capcmultiservicios.capc"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -28,8 +28,7 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.capc_multi"
+        applicationId = "site.capcmultiservicios.capc"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

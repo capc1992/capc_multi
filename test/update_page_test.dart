@@ -92,7 +92,7 @@ class _VersionProvider implements PackageVersionProvider {
   Future<AppVersion> current() async => AppVersion(
     versionName: '0.4.0',
     buildNumber: 7,
-    packageName: 'com.example.capc_multi',
+    packageName: 'site.capcmultiservicios.capc',
   );
 }
 

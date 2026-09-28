@@ -1,4 +1,4 @@
-package com.example.capc_multi
+package site.capcmultiservicios.capc
 
 import android.app.Activity
 import android.content.Intent

@@ -42,5 +42,5 @@ export const privacyPage = `<!doctype html>
 <h2>Compartición</h2><p>CAPC no vende datos ni utiliza publicidad o seguimiento publicitario. El alojamiento técnico autorizado puede procesar datos únicamente para operar el servicio.</p>
 <h2>Retención y eliminación</h2><p>La información remota se conserva mientras la cuenta exista. Al eliminarla se borran la identidad, sesiones, dispositivos y datos sincronizados. Registros locales permanecen en cada dispositivo y pueden estar sujetos a obligaciones contables del propietario.</p>
 <p><a class="button" href="/eliminar-cuenta">Solicitar eliminación de cuenta</a></p>
-<h2>Contacto de privacidad</h2><p>Para consultas de privacidad escribe a <a href="mailto:internetcapc@gmail.com">internetcapc@gmail.com</a>.</p>
+<h2>Contacto de privacidad</h2><p>Para consultas de privacidad escribe a <a href="mailto:nicolasperdomoliz@gmail.com">nicolasperdomoliz@gmail.com</a>.</p>
 </article><p class="footer">CAPC MULTISERVICIO</p></main></body></html>`;
