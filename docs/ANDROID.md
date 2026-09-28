@@ -1,6 +1,6 @@
 # Android offline de CAPC MULTISERVICIO
 
-Esta rama adapta la versión Windows `0.3.0+6` para ejecutar la misma lógica local en Android. La base de sincronización es opcional y no está desplegada: sin configuración remota Android continúa completamente local. No se accedió al VPS, no se añadió Firebase ni se publicó en Google Play.
+Esta rama adapta la versión Windows `0.3.0+6` para ejecutar la misma lógica local en Android. La sincronización continúa siendo opcional: sin configuración remota Android trabaja completamente local. La API de producción está desplegada en `https://api.capcmultiservicios.site`; todavía falta generar y publicar una compilación Android firmada que active esa URL. No se añadió Firebase ni se publicó en Google Play.
 
 ## Arquitectura
 
@@ -88,4 +88,4 @@ Las URL que deben permanecer públicas y registrarse en Play Console son:
 - `https://api.capcmultiservicios.site/privacidad`
 - `https://api.capcmultiservicios.site/eliminar-cuenta`
 
-El código y las pruebas no convierten esas URL en públicas por sí solos: requieren desplegar la API con HTTPS antes de enviar la ficha a revisión.
+Ambas URL están públicas mediante HTTPS desde el 28 de septiembre de 2026 y pueden registrarse en Play Console.

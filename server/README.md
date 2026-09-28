@@ -1,6 +1,6 @@
 # CAPC Sync Server
 
-API Fastify/TypeScript para identidad remota y sincronización offline-first sobre PostgreSQL 16. SQLite sigue siendo la fuente operativa de cada equipo: la API almacena eventos idempotentes, proyecciones revisadas, hechos financieros inmutables y movimientos de inventario.
+API Fastify/TypeScript para identidad remota y sincronización offline-first sobre PostgreSQL 16 o posterior. SQLite sigue siendo la fuente operativa de cada equipo: la API almacena eventos idempotentes, proyecciones revisadas, hechos financieros inmutables y movimientos de inventario.
 
 La API también sirve `GET /privacidad` y `GET /eliminar-cuenta`. `POST /api/v1/identity/delete-account` exige las credenciales remotas, confirmación explícita y aplica límite de intentos; elimina transaccionalmente la identidad y los datos sincronizados del negocio. Consulta `docs/PRIVACIDAD-Y-ELIMINACION.md`.
 
@@ -17,7 +17,7 @@ La API también sirve `GET /privacidad` y `GET /eliminar-cuenta`. `POST /api/v1/
 ## Requisitos
 
 - Node.js 22 o posterior.
-- PostgreSQL 16 (la misma versión fijada en GitHub Actions y prevista para el futuro VPS).
+- PostgreSQL 16 o posterior. GitHub Actions conserva PostgreSQL 16 como línea base y producción utiliza PostgreSQL 18.
 - Base y usuario exclusivos con permisos mínimos sobre esa base.
 
 No se necesita Docker para desarrollar Flutter. La integración SQL se ejecuta en GitHub Actions con un servicio PostgreSQL real.

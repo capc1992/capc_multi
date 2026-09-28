@@ -18,9 +18,9 @@ La aplicación enlaza ambas rutas desde `Configuración > Conexión remota y dis
 
 El formulario web permite omitir el identificador del negocio cuando el correo y la contraseña identifican una sola cuenta. Si las mismas credenciales administran varias, exige el ID para evitar borrar el negocio equivocado.
 
-## Antes de Google Play
+## Producción y pasos restantes de Google Play
 
-- desplegar la API y verificar ambas páginas mediante HTTPS público;
+- API y páginas desplegadas y verificadas mediante HTTPS público el 28 de septiembre de 2026;
 - verificar que `nicolasperdomoliz@gmail.com` reciba correctamente las consultas de privacidad;
 - completar la sección Seguridad de los datos y registrar la URL de eliminación en Play Console;
 - revisar la política con asesoría legal según los datos y obligaciones reales del negocio;
