@@ -36,6 +36,79 @@ extension CapcSyncStore on CapcRepository {
     );
   });
 
+  Future<List<SyncConflictRecord>> listSyncConflicts({
+    bool includeResolved = false,
+  }) => _run(() async {
+    await _require(Permission.viewAudit, null, 'conflictos.ver');
+    final rows = await _db.query(
+      'sync_conflicts',
+      where:
+          'business_id=?${includeResolved ? '' : ' AND resolved_at IS NULL'}',
+      whereArgs: [businessId],
+      orderBy: 'created_at DESC,id DESC',
+    );
+    return rows
+        .map(
+          (row) => SyncConflictRecord(
+            id: row['id'] as String,
+            operationId: row['operation_id'] as String,
+            kind: row['kind'] as String,
+            entityId: row['entity_id'] as String,
+            details: Map<String, Object?>.from(
+              jsonDecode(row['details'] as String) as Map,
+            ),
+            createdAt: DateTime.parse(row['created_at'] as String).toUtc(),
+            resolvedAt: row['resolved_at'] == null
+                ? null
+                : DateTime.parse(row['resolved_at'] as String).toUtc(),
+          ),
+        )
+        .toList(growable: false);
+  });
+
+  Future<void> markSyncConflictReviewed(String conflictId) => _run(() async {
+    final id = CapcRepository._id(conflictId);
+    await _db.transaction((txn) async {
+      final actor = await _require(
+        Permission.viewAudit,
+        txn,
+        'conflictos.resolver',
+      );
+      final rows = await txn.query(
+        'sync_conflicts',
+        where: 'id=? AND business_id=?',
+        whereArgs: [id, businessId],
+        limit: 1,
+      );
+      if (rows.length != 1) {
+        throw const CapcException('El conflicto ya no existe.');
+      }
+      if (rows.single['resolved_at'] != null) return;
+      final now = CapcRepository._now();
+      await txn.update(
+        'sync_conflicts',
+        {'resolved_at': now},
+        where: 'id=? AND business_id=?',
+        whereArgs: [id, businessId],
+      );
+      await txn.insert('audit', {
+        'id': CapcRepository._uuid.v4(),
+        'action': 'sync.conflict_reviewed',
+        'entity_id': rows.single['entity_id'],
+        'actor_id': actor.id,
+        'actor_name': actor.name,
+        'created_at': now,
+        'details': jsonEncode({
+          'conflict_id': id,
+          'kind': rows.single['kind'],
+          'operation_id': rows.single['operation_id'],
+        }),
+        'business_id': businessId,
+        'device_id': deviceId,
+      });
+    });
+  });
+
   Future<void> setSyncStatus(
     SyncStatus status, {
     String? error,
@@ -63,72 +136,100 @@ extension CapcSyncStore on CapcRepository {
     );
   });
 
-  Future<List<SyncOperation>> prepareSyncPush({int limit = 100}) =>
-      _run(() async {
-        if (limit < 1 || limit > 500) {
-          throw const CapcException(
-            'El tamaño del lote de sincronización no es válido.',
-          );
-        }
-        return _db.transaction((txn) async {
-          final rows = await txn.query(
+  Future<List<SyncOperation>> prepareSyncPush({
+    int limit = 100,
+  }) => _run(() async {
+    if (limit < 1 || limit > 500) {
+      throw const CapcException(
+        'El tamaño del lote de sincronización no es válido.',
+      );
+    }
+    return _db.transaction((txn) async {
+      // Older releases saved opening inventory locally without an outbox
+      // event. Recover only this device's entries, keeping original IDs and
+      // costs. Acknowledged entries remain in outbox and are never resent.
+      final missingInitial = await txn.rawQuery(
+        '''SELECT m.* FROM stock_movements m
+               WHERE m.business_id=? AND m.device_id=? AND m.kind='Inicial'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM outbox o WHERE o.operation_id=m.id
+                 )
+               ORDER BY m.created_at,m.id''',
+        [businessId, deviceId],
+      );
+      for (final movement in missingInitial) {
+        await _enqueueInitialStock(txn, movement);
+      }
+      final rows = await txn.query(
+        'outbox',
+        where:
+            "business_id=? AND state!='acknowledged' AND retryable=1 AND (next_attempt_at IS NULL OR next_attempt_at<=?)",
+        whereArgs: [businessId, CapcRepository._now()],
+        orderBy: 'created_at,id',
+        limit: limit,
+      );
+      final now = CapcRepository._now();
+      final result = <SyncOperation>[];
+      for (final row in rows) {
+        final payload = Map<String, Object?>.from(
+          jsonDecode(row['payload'] as String) as Map,
+        );
+        if (CapcSyncStore._containsSyncSecret(payload)) {
+          await txn.update(
             'outbox',
-            where: "business_id=? AND state!='acknowledged'",
-            whereArgs: [businessId],
-            orderBy: 'created_at,id',
-            limit: limit,
+            {
+              'state': 'error',
+              'last_error':
+                  'El evento contiene campos que no se pueden sincronizar.',
+              'retryable': 0,
+              'error_code': 'secret_in_payload',
+              'next_attempt_at': null,
+            },
+            where: 'id = ?',
+            whereArgs: [row['id']],
           );
-          final now = CapcRepository._now();
-          final result = <SyncOperation>[];
-          for (final row in rows) {
-            final payload = Map<String, Object?>.from(
-              jsonDecode(row['payload'] as String) as Map,
-            );
-            if (CapcSyncStore._containsSyncSecret(payload)) {
-              await txn.update(
-                'outbox',
-                {
-                  'state': 'error',
-                  'last_error':
-                      'El evento contiene campos que no se pueden sincronizar.',
-                },
-                where: 'id = ?',
-                whereArgs: [row['id']],
-              );
-              continue;
-            }
-            await txn.update(
-              'outbox',
-              {
-                'state': 'sending',
-                'retry_count': (row['retry_count'] as int) + 1,
-                'last_attempt_at': now,
-                'last_error': null,
-              },
-              where: 'id = ?',
-              whereArgs: [row['id']],
-            );
-            result.add(
-              SyncOperation(
-                businessId: row['business_id'] as String,
-                deviceId: row['device_id'] as String,
-                operationId: row['operation_id'] as String,
-                type: row['kind'] as String,
-                schemaVersion: row['schema_version'] as int,
-                occurredAt: DateTime.parse(row['created_at'] as String).toUtc(),
-                content: payload,
-              ),
-            );
-          }
-          return result;
-        });
-      });
+          continue;
+        }
+        await txn.update(
+          'outbox',
+          {
+            'state': 'sending',
+            'retry_count': (row['retry_count'] as int) + 1,
+            'last_attempt_at': now,
+            'last_error': null,
+            'error_code': null,
+          },
+          where: 'id = ?',
+          whereArgs: [row['id']],
+        );
+        result.add(
+          SyncOperation(
+            businessId: row['business_id'] as String,
+            deviceId: row['device_id'] as String,
+            operationId: row['operation_id'] as String,
+            type: row['kind'] as String,
+            schemaVersion: row['schema_version'] as int,
+            occurredAt: DateTime.parse(row['created_at'] as String).toUtc(),
+            content: payload,
+          ),
+        );
+      }
+      return result;
+    });
+  });
 
   Future<void> acknowledgeSyncPush(Iterable<SyncPushAck> acknowledgements) =>
       _run(() async {
         final now = CapcRepository._now();
         await _db.transaction((txn) async {
           for (final ack in acknowledgements) {
+            final rows = await txn.query(
+              'outbox',
+              columns: ['kind', 'payload'],
+              where: 'business_id=? AND operation_id=?',
+              whereArgs: [businessId, ack.operationId],
+              limit: 1,
+            );
             await txn.update(
               'outbox',
               {
@@ -136,24 +237,82 @@ extension CapcSyncStore on CapcRepository {
                 'acknowledged_at': now,
                 'server_cursor': ack.serverCursor,
                 'last_error': null,
+                'error_code': null,
+                'next_attempt_at': null,
               },
               where: 'business_id=? AND operation_id=?',
               whereArgs: [businessId, ack.operationId],
             );
+            if (ack.conflicts > 0 && rows.isNotEmpty) {
+              final payload = Map<String, Object?>.from(
+                jsonDecode(rows.single['payload'] as String) as Map,
+              );
+              final entityId = CapcSyncStore._syncEntityId(
+                rows.single['kind'] as String,
+                payload,
+                ack.operationId,
+              );
+              await txn.insert('sync_conflicts', {
+                'id': CapcRepository._uuid.v4(),
+                'business_id': businessId,
+                'operation_id': ack.operationId,
+                'kind': 'server.conflict',
+                'entity_id': entityId,
+                'details': jsonEncode({
+                  'count': ack.conflicts,
+                  'server_cursor': ack.serverCursor,
+                  'operation_type': rows.single['kind'],
+                }),
+                'created_at': now,
+              }, conflictAlgorithm: ConflictAlgorithm.ignore);
+            }
           }
         });
       });
 
   Future<void> failSyncPush(
     Iterable<String> operationIds,
-    String error,
-  ) => _run(() async {
+    String error, {
+    bool retryable = true,
+    String? code,
+  }) => _run(() async {
     final ids = operationIds.toSet().toList(growable: false);
     if (ids.isEmpty) return;
-    final placeholders = List.filled(ids.length, '?').join(',');
-    await _db.rawUpdate(
-      "UPDATE outbox SET state='error',last_error=? WHERE business_id=? AND operation_id IN ($placeholders)",
-      [CapcSyncStore._syncError(error), businessId, ...ids],
+    await _db.transaction((txn) async {
+      for (final id in ids) {
+        final rows = await txn.query(
+          'outbox',
+          columns: ['retry_count'],
+          where: 'business_id=? AND operation_id=?',
+          whereArgs: [businessId, id],
+          limit: 1,
+        );
+        if (rows.isEmpty) continue;
+        final attempts = rows.single['retry_count'] as int;
+        await txn.update(
+          'outbox',
+          {
+            'state': 'error',
+            'last_error': CapcSyncStore._syncError(error),
+            'error_code': code,
+            'retryable': retryable ? 1 : 0,
+            'next_attempt_at': retryable
+                ? CapcSyncStore._nextAttempt(id, attempts)
+                : null,
+          },
+          where: 'business_id=? AND operation_id=?',
+          whereArgs: [businessId, id],
+        );
+      }
+    });
+  });
+
+  Future<void> retryFailedSyncNow() => _run(() async {
+    await _db.update(
+      'outbox',
+      {'next_attempt_at': null},
+      where: "business_id=? AND state='error' AND retryable=1",
+      whereArgs: [businessId],
     );
   });
 
@@ -263,6 +422,22 @@ extension CapcSyncStore on CapcRepository {
           conflicts++;
         }
       }
+      // A receiving device may have consumed the recovered entry before it was
+      // itself updated. Repair those old projections even on an empty pull.
+      final recoverable = await txn.rawQuery(
+        '''SELECT DISTINCT c.entity_id FROM sync_conflicts c
+           WHERE c.business_id=? AND c.resolved_at IS NULL
+             AND c.kind IN ('inventory.negative','inventory.invalid_balance')
+             AND EXISTS (
+               SELECT 1 FROM stock_movements m
+               WHERE m.business_id=c.business_id AND m.product_id=c.entity_id
+                 AND m.kind='Inicial'
+             )''',
+        [businessId],
+      );
+      for (final row in recoverable) {
+        await _rebuildInitialStock(txn, null, row['entity_id'] as String);
+      }
       final state = await txn.query(
         'sync_state',
         where: 'business_id = ?',
@@ -279,7 +454,35 @@ extension CapcSyncStore on CapcRepository {
     });
   });
 
+  Future<String> _collisionSafeNumber(
+    DatabaseExecutor txn,
+    String table,
+    String requested,
+    String entityId,
+    String sourceDeviceId,
+  ) async {
+    Future<bool> available(String value) async => (await txn.query(
+      table,
+      columns: ['id'],
+      where: 'number=? AND id<>?',
+      whereArgs: [value, entityId],
+      limit: 1,
+    )).isEmpty;
+
+    if (await available(requested)) return requested;
+    final compactDevice = sourceDeviceId.replaceAll('-', '').toUpperCase();
+    final deviceTag = compactDevice.substring(
+      0,
+      compactDevice.length < 6 ? compactDevice.length : 6,
+    );
+    final tagged = '$requested-$deviceTag';
+    if (await available(tagged)) return tagged;
+    final compactEntity = entityId.replaceAll('-', '').toUpperCase();
+    return '$tagged-${compactEntity.substring(0, compactEntity.length < 4 ? compactEntity.length : 4)}';
+  }
+
   static int _syncPriority(String type) {
+    if (type == 'business.saved') return -1;
     if (type == 'product.saved' ||
         type == 'customer.saved' ||
         type == 'supplier.saved') {
@@ -300,12 +503,20 @@ extension CapcSyncStore on CapcRepository {
     SyncOperation operation,
   ) async {
     switch (operation.type) {
+      case 'business.saved':
+        return _applySyncBusiness(txn, operation);
       case 'product.saved':
         return _applySyncProduct(txn, operation);
+      case 'product.deleted':
+        return _applySyncDeletion(txn, operation, 'products');
       case 'customer.saved':
         return _applySyncCustomer(txn, operation);
+      case 'customer.deleted':
+        return _applySyncDeletion(txn, operation, 'customers');
       case 'supplier.saved':
         return _applySyncSupplier(txn, operation);
+      case 'supplier.deleted':
+        return _applySyncDeletion(txn, operation, 'suppliers');
       case 'purchase.created':
       case 'purchase.received':
       case 'supplier.payment':
@@ -343,6 +554,101 @@ extension CapcSyncStore on CapcRepository {
         // version has no materializer yet. No financial event is overwritten.
         return false;
     }
+  }
+
+  Future<bool> _applySyncDeletion(
+    DatabaseExecutor txn,
+    SyncOperation operation,
+    String table,
+  ) async {
+    final data = operation.content;
+    final id = data['id'] as String;
+    final revision = data['revision'] as int? ?? 1;
+    final rows = await txn.query(
+      table,
+      where: 'id=? AND business_id=?',
+      whereArgs: [id, businessId],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      throw const _SyncDependencyException(
+        'Falta el registro que debe eliminarse.',
+      );
+    }
+    final localRevision = rows.single['revision'] as int;
+    if (revision < localRevision ||
+        (revision == localRevision && rows.single['deleted_at'] == null)) {
+      await _recordSyncConflict(txn, operation, 'revision.stale', id, {
+        'local_revision': localRevision,
+        'remote_revision': revision,
+      });
+      return true;
+    }
+    if (revision == localRevision) return false;
+    await txn.update(
+      table,
+      {
+        'deleted_at': data['deleted_at'],
+        'updated_at': operation.occurredAt.toIso8601String(),
+        'revision': revision,
+      },
+      where: 'id=? AND business_id=?',
+      whereArgs: [id, businessId],
+    );
+    return false;
+  }
+
+  Future<bool> _applySyncBusiness(
+    DatabaseExecutor txn,
+    SyncOperation operation,
+  ) async {
+    final data = operation.content;
+    final revision = data['revision'] as int? ?? 1;
+    final rows = await txn.query(
+      'business_profiles',
+      where: 'business_id=?',
+      whereArgs: [businessId],
+      limit: 1,
+    );
+    if (rows.isNotEmpty) {
+      final localRevision = rows.single['revision'] as int;
+      if (revision < localRevision ||
+          (revision == localRevision &&
+              rows.single['updated_at'] != data['updated_at'])) {
+        await _recordSyncConflict(
+          txn,
+          operation,
+          'revision.stale',
+          businessId,
+          {'local_revision': localRevision, 'remote_revision': revision},
+        );
+        return true;
+      }
+      if (revision == localRevision) return false;
+    }
+    final logo = data['logo'];
+    final record = <String, Object?>{
+      'id': businessId,
+      'business_id': businessId,
+      'device_id': operation.deviceId,
+      'name': data['name'],
+      'phone': data['phone'] ?? '',
+      'address': data['address'] ?? '',
+      'email': data['email'] ?? '',
+      'configuration': data['configuration'] ?? '{}',
+      'logo': logo is String && logo.isNotEmpty ? base64Decode(logo) : null,
+      'logo_mime': data['logo_mime'],
+      'updated_at': data['updated_at'],
+      'updated_by': data['updated_by'],
+      'revision': revision,
+      'deleted_at': data['deleted_at'],
+    };
+    await txn.insert(
+      'business_profiles',
+      record,
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    return false;
   }
 
   Future<bool> _applySyncProduct(
@@ -509,7 +815,10 @@ extension CapcSyncStore on CapcRepository {
       );
       return false;
     }
-    await txn.insert('suppliers', {...data, 'business_id': businessId});
+    final insertData = <String, Object?>{...data}
+      ..remove('_audit')
+      ..['business_id'] = businessId;
+    await txn.insert('suppliers', insertData);
     return false;
   }
 
@@ -552,6 +861,13 @@ extension CapcSyncStore on CapcRepository {
         }
         await txn.insert('purchases', {
           ...purchase,
+          'number': await _collisionSafeNumber(
+            txn,
+            'purchases',
+            purchase['number'] as String,
+            id,
+            operation.deviceId,
+          ),
           'business_id': businessId,
           'device_id': operation.deviceId,
         });
@@ -641,6 +957,13 @@ extension CapcSyncStore on CapcRepository {
       )).isEmpty) {
         await txn.insert('sale_returns', {
           ...record,
+          'number': await _collisionSafeNumber(
+            txn,
+            'sale_returns',
+            record['number'] as String,
+            id,
+            operation.deviceId,
+          ),
           'business_id': businessId,
           'device_id': operation.deviceId,
         });
@@ -818,6 +1141,13 @@ extension CapcSyncStore on CapcRepository {
     }
     await txn.insert('quotes', {
       ...quote,
+      'number': await _collisionSafeNumber(
+        txn,
+        'quotes',
+        quote['number'] as String,
+        id,
+        operation.deviceId,
+      ),
       'business_id': businessId,
       'device_id': operation.deviceId,
     });
@@ -925,6 +1255,13 @@ extension CapcSyncStore on CapcRepository {
     }
     await txn.insert('work_orders', {
       ...work,
+      'number': await _collisionSafeNumber(
+        txn,
+        'work_orders',
+        work['number'] as String,
+        id,
+        operation.deviceId,
+      ),
       'revision': revision,
       'business_id': businessId,
       'device_id': operation.deviceId,
@@ -970,7 +1307,22 @@ extension CapcSyncStore on CapcRepository {
           );
         }
       }
-      await txn.insert('sales', {...sale, 'business_id': businessId});
+      final sequenceRows = await txn.rawQuery(
+        'SELECT COALESCE(MAX(sequence),0)+1 AS next FROM sales WHERE business_id=?',
+        [businessId],
+      );
+      await txn.insert('sales', {
+        ...sale,
+        'number': await _collisionSafeNumber(
+          txn,
+          'sales',
+          sale['number'] as String,
+          saleId,
+          operation.deviceId,
+        ),
+        'sequence': sequenceRows.single['next'],
+        'business_id': businessId,
+      });
       for (final line in saleLines) {
         await txn.insert('sale_lines', {...line, 'business_id': businessId});
       }
@@ -1059,6 +1411,9 @@ extension CapcSyncStore on CapcRepository {
       'business_id': businessId,
       'device_id': operation.deviceId,
     });
+    if (movement['kind'] == 'Inicial') {
+      return _rebuildInitialStock(txn, operation, productId);
+    }
     final product = products.single;
     final delta = movement['delta'] as int;
     final next = (product['stock'] as int) + delta;
@@ -1089,6 +1444,74 @@ extension CapcSyncStore on CapcRepository {
     return false;
   }
 
+  Future<bool> _rebuildInitialStock(
+    DatabaseExecutor txn,
+    SyncOperation? operation,
+    String productId,
+  ) async {
+    // Late opening entries can follow sales whose negative balances were kept
+    // as conflicts. Rebuild from immutable movements so those sales still count.
+    final movements = await txn.query(
+      'stock_movements',
+      columns: ['delta', 'cost_micros'],
+      where: 'business_id=? AND product_id=?',
+      whereArgs: [businessId, productId],
+    );
+    var quantity = BigInt.zero;
+    var value = BigInt.zero;
+    for (final movement in movements) {
+      final delta = movement['delta'] as int;
+      quantity += BigInt.from(delta);
+      final cost = BigInt.from(movement['cost_micros'] as int);
+      value += delta > 0 ? cost : -cost;
+    }
+    if (quantity < BigInt.zero ||
+        quantity > BigInt.from(CapcRepository._maxQuantity) ||
+        value < BigInt.zero ||
+        value > BigInt.from(CapcRepository._maxMicros) ||
+        (quantity == BigInt.zero && value != BigInt.zero)) {
+      if (operation != null) {
+        await _recordSyncConflict(
+          txn,
+          operation,
+          'inventory.invalid_balance',
+          productId,
+          {'stock': quantity.toString(), 'value_micros': value.toString()},
+        );
+      }
+      return true;
+    }
+    await txn.update(
+      'products',
+      {'stock': quantity.toInt(), 'inventory_value_micros': value.toInt()},
+      where: 'id=? AND business_id=?',
+      whereArgs: [productId, businessId],
+    );
+    final now = CapcRepository._now();
+    await txn.rawUpdate(
+      '''UPDATE sync_conflicts SET resolved_at=?
+         WHERE business_id=? AND entity_id=? AND resolved_at IS NULL
+           AND kind IN ('inventory.negative','inventory.invalid_balance')''',
+      [now, businessId, productId],
+    );
+    await txn.rawUpdate(
+      '''UPDATE inbox SET state='applied',applied_at=?,last_error=NULL
+         WHERE business_id=? AND state='conflict'
+           AND operation_id IN (
+             SELECT operation_id FROM sync_conflicts
+             WHERE business_id=? AND entity_id=? AND resolved_at IS NOT NULL
+               AND kind IN ('inventory.negative','inventory.invalid_balance')
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM sync_conflicts c
+             WHERE c.business_id=inbox.business_id
+               AND c.operation_id=inbox.operation_id AND c.resolved_at IS NULL
+           )''',
+      [now, businessId, businessId, productId],
+    );
+    return false;
+  }
+
   Future<void> _recordSyncConflict(
     DatabaseExecutor txn,
     SyncOperation operation,
@@ -1113,6 +1536,52 @@ extension CapcSyncStore on CapcRepository {
             .map((item) => Map<String, Object?>.from(item))
             .toList(growable: false)
       : const [];
+
+  static String _nextAttempt(String operationId, int attempts) {
+    final exponent = (attempts - 1).clamp(0, 10);
+    final baseSeconds = min(21600, 30 * pow(2, exponent).toInt());
+    final seed = operationId.codeUnits.fold<int>(
+      0,
+      (value, item) => value + item,
+    );
+    final jitterSeconds = (baseSeconds * (seed % 21) / 100).round();
+    return DateTime.now()
+        .toUtc()
+        .add(Duration(seconds: baseSeconds + jitterSeconds))
+        .toIso8601String();
+  }
+
+  static String _syncEntityId(
+    String type,
+    Map<String, Object?> payload,
+    String fallback,
+  ) {
+    for (final key in const [
+      'id',
+      'productId',
+      'customerId',
+      'supplierId',
+      'quoteId',
+      'workId',
+      'saleId',
+      'purchaseId',
+    ]) {
+      final value = payload[key];
+      if (value is String && value.isNotEmpty) return value;
+    }
+    for (final key in const [
+      'product',
+      'customer',
+      'supplier',
+      'quote',
+      'work',
+      'sale',
+    ]) {
+      final value = payload[key];
+      if (value is Map && value['id'] is String) return value['id'] as String;
+    }
+    return fallback;
+  }
 
   static bool _containsSyncSecret(Object? value) {
     const forbidden = {

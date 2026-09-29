@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 
 import '../platform/platform_services.dart';
 import '../sync/sync_models.dart';
+import '../sync/secure_credentials.dart';
 import 'models.dart';
 export 'models.dart';
 part 'operations.dart';
@@ -32,7 +33,7 @@ class CapcRepository {
   static const _maxMoney = 999999999999;
   static const _maxQuantity = 1000000000;
   static const _maxMicros = 9000000000000000000;
-  static const _schemaVersion = 4;
+  static const _schemaVersion = 8;
   static const _applicationId = 1128353859;
   static final _passwordAlgorithm = Argon2id(
     memory: 19456,
@@ -45,6 +46,7 @@ class CapcRepository {
   String _businessId, _deviceId;
   LocalUser? _session;
   int _sessionVersion = 0;
+  int _centralSecurityVersion = 0;
   int _sessionEpoch = 0;
   static final Object _epochKey = Object();
   bool _closed = false, _maintenance = false;
@@ -135,6 +137,22 @@ class CapcRepository {
           if (current == 3) {
             await _migrateV3ToV4(db);
             current = 4;
+          }
+          if (current == 4) {
+            await _migrateV4ToV5(db);
+            current = 5;
+          }
+          if (current == 5) {
+            await _migrateV5ToV6(db);
+            current = 6;
+          }
+          if (current == 6) {
+            await _migrateV6ToV7(db);
+            current = 7;
+          }
+          if (current == 7) {
+            await _migrateV7ToV8(db);
+            current = 8;
           }
           if (current != newVersion) {
             throw const CapcException('Versión de datos no compatible.');
@@ -372,15 +390,229 @@ class CapcRepository {
     return _session!;
   });
 
+  Future<LocalUser> cacheCentralLogin(
+    OfflineAuthorization authorization,
+    String password,
+  ) => _run(() async {
+    _validateCentralAuthorization(authorization);
+    final credentials = await _hashPassword(password);
+    final now = _now();
+    await _db.insert('central_auth_cache', {
+      'user_id': authorization.userId,
+      'business_id': businessId,
+      'device_id': deviceId,
+      'name': authorization.principalName,
+      'username': authorization.username.toLowerCase(),
+      'role_type': authorization.roleType,
+      'security_version': authorization.securityVersion,
+      'permissions_json': jsonEncode(authorization.permissions),
+      'grant_expires_at': authorization.expiresAt.toIso8601String(),
+      ...credentials,
+      'failed_login': 0,
+      'locked_until': null,
+      'updated_at': now,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    return _startCentralSession(authorization);
+  });
+
+  Future<LocalUser> loginCentralOffline(
+    String username,
+    String password,
+    OfflineAuthorization authorization,
+  ) => _run(() async {
+    _validateCentralAuthorization(authorization);
+    final loginName = _text(username, 'El usuario', 80).toLowerCase();
+    final rows = await _db.query(
+      'central_auth_cache',
+      where:
+          'business_id = ? AND device_id = ? AND username = ? COLLATE NOCASE',
+      whereArgs: [businessId, deviceId, loginName],
+      limit: 1,
+    );
+    if (rows.length != 1) {
+      throw const CapcException(
+        'Este usuario central debe iniciar sesión con internet una vez en este dispositivo.',
+      );
+    }
+    final row = rows.single;
+    final locked = row['locked_until'] as String?;
+    if (locked != null &&
+        DateTime.parse(locked).isAfter(DateTime.now().toUtc())) {
+      throw const CapcException(
+        'Demasiados intentos. Espera cinco minutos e inténtalo otra vez.',
+      );
+    }
+    final matchesGrant =
+        row['user_id'] == authorization.userId &&
+        row['security_version'] == authorization.securityVersion &&
+        authorization.username.toLowerCase() == loginName;
+    final valid = matchesGrant && await _verifyPassword(password, row);
+    if (!valid) {
+      final attempts = (row['failed_login'] as int) + 1;
+      await _db.update(
+        'central_auth_cache',
+        {
+          'failed_login': attempts,
+          'locked_until': attempts >= 5
+              ? DateTime.now()
+                    .toUtc()
+                    .add(const Duration(minutes: 5))
+                    .toIso8601String()
+              : null,
+        },
+        where: 'user_id = ?',
+        whereArgs: [row['user_id']],
+      );
+      throw const CapcException('Usuario o contraseña incorrectos.');
+    }
+    await _db.update(
+      'central_auth_cache',
+      {'failed_login': 0, 'locked_until': null},
+      where: 'user_id = ?',
+      whereArgs: [row['user_id']],
+    );
+    return _startCentralSession(authorization);
+  });
+
+  Future<void> refreshCentralAuthorization(
+    OfflineAuthorization authorization,
+  ) => _run(() async {
+    _validateCentralAuthorization(authorization);
+    final current = _session;
+    if (current == null ||
+        !current.central ||
+        current.id != authorization.userId) {
+      return;
+    }
+    final changed = await _db.update(
+      'central_auth_cache',
+      {
+        'name': authorization.principalName,
+        'username': authorization.username.toLowerCase(),
+        'role_type': authorization.roleType,
+        'security_version': authorization.securityVersion,
+        'permissions_json': jsonEncode(authorization.permissions),
+        'grant_expires_at': authorization.expiresAt.toIso8601String(),
+        'failed_login': 0,
+        'locked_until': null,
+        'updated_at': _now(),
+      },
+      where: 'user_id = ? AND business_id = ? AND device_id = ?',
+      whereArgs: [authorization.userId, businessId, deviceId],
+    );
+    if (changed != 1) {
+      logout();
+      throw const CapcException(
+        'La autorización central no está registrada en este dispositivo.',
+      );
+    }
+    _startCentralSession(authorization);
+  });
+
+  void _validateCentralAuthorization(OfflineAuthorization authorization) {
+    if (authorization.businessId != businessId ||
+        authorization.deviceId != deviceId ||
+        !authorization.expiresAt.isAfter(DateTime.now().toUtc()) ||
+        !const {
+          'administrator',
+          'operational',
+        }.contains(authorization.roleType)) {
+      throw const CapcException(
+        'La autorización offline no es válida para este negocio y dispositivo.',
+      );
+    }
+  }
+
+  LocalUser _startCentralSession(OfflineAuthorization authorization) {
+    final user = LocalUser(
+      id: authorization.userId,
+      name: authorization.principalName,
+      username: authorization.username,
+      role: authorization.roleType == 'administrator'
+          ? UserRole.admin
+          : UserRole.cashier,
+      central: true,
+      centralRoleType: authorization.roleType,
+      centralAuthorizationExpiresAt: authorization.expiresAt,
+      permissionKeys: authorization.permissions.toSet(),
+    );
+    _session = user;
+    _sessionVersion = 0;
+    _centralSecurityVersion = authorization.securityVersion;
+    _sessionEpoch++;
+    return user;
+  }
+
+  bool hasPermission(String key) {
+    final user = _session;
+    if (user == null) return false;
+    if (user.central) return user.canKey(key);
+    return switch (key) {
+      'access:read' ||
+      'access:manage' ||
+      'usuarios.ver' ||
+      'usuarios.crear' ||
+      'usuarios.editar' ||
+      'usuarios.eliminar' ||
+      'roles.ver' ||
+      'roles.crear' ||
+      'roles.editar' ||
+      'roles.eliminar' => user.can(Permission.manageUsers),
+      'configuracion.editar' => user.can(Permission.manageSettings),
+      'productos.crear' ||
+      'productos.editar' ||
+      'productos.eliminar' => user.can(Permission.manageCatalog),
+      'inventario.ajustar' => user.can(Permission.adjustStock),
+      'clientes.crear' ||
+      'clientes.editar' ||
+      'clientes.eliminar' => user.can(Permission.manageCustomers),
+      'ventas.crear' => user.can(Permission.sell),
+      'ventas.editar' => user.can(Permission.collect),
+      'ventas.anular' || 'devoluciones.crear' => user.can(Permission.returns),
+      'precios.editar' => user.can(Permission.setPrices),
+      'proveedores.ver' ||
+      'proveedores.crear' ||
+      'proveedores.editar' ||
+      'proveedores.eliminar' ||
+      'compras.ver' ||
+      'compras.crear' ||
+      'compras.editar' ||
+      'compras.recibir' ||
+      'compras.abonar' => user.can(Permission.managePurchases),
+      'cotizaciones.ver' ||
+      'cotizaciones.crear' ||
+      'cotizaciones.editar' ||
+      'cotizaciones.convertir' => user.can(Permission.manageQuotes),
+      'trabajos.ver' ||
+      'trabajos.crear' ||
+      'trabajos.editar' ||
+      'trabajos.cobrar' => user.can(Permission.manageJobs),
+      'caja.ver' ||
+      'caja.abrir' ||
+      'caja.cerrar' ||
+      'caja.movimientos' => user.can(Permission.manageCash),
+      'gastos.crear' => user.can(Permission.expense),
+      'respaldos.crear' => user.can(Permission.backup),
+      'respaldos.restaurar' => user.can(Permission.restore),
+      'conflictos.ver' ||
+      'conflictos.resolver' => user.can(Permission.viewAudit),
+      'reportes.ver' => user.can(Permission.viewReports),
+      'auditoria.ver' => user.can(Permission.viewAudit),
+      _ => user.can(Permission.read),
+    };
+  }
+
   void logout() {
     _session = null;
     _sessionVersion = 0;
+    _centralSecurityVersion = 0;
     _sessionEpoch++;
   }
 
   Future<LocalUser> _require(
     Permission permission, [
     DatabaseExecutor? executor,
+    String? centralPermission,
   ]) async {
     await _requireOwnerConfigurationComplete(executor ?? _db);
     if (_session == null) {
@@ -388,6 +620,38 @@ class CapcRepository {
     }
     final session = _actor;
     final epoch = _sessionEpoch;
+    if (session.central) {
+      if (session.centralAuthorizationExpiresAt == null ||
+          !session.centralAuthorizationExpiresAt!.isAfter(
+            DateTime.now().toUtc(),
+          )) {
+        logout();
+        throw const CapcException(
+          'La autorización offline venció. Conéctate a internet e inicia sesión otra vez.',
+        );
+      }
+      if (centralPermission == null || !session.canKey(centralPermission)) {
+        throw const CapcException(
+          'Tu usuario no tiene permiso para realizar esta operación.',
+        );
+      }
+      final cached = await (executor ?? _db).query(
+        'central_auth_cache',
+        columns: ['security_version'],
+        where: 'user_id = ? AND business_id = ?',
+        whereArgs: [session.id, businessId],
+        limit: 1,
+      );
+      if (epoch != _sessionEpoch ||
+          cached.length != 1 ||
+          cached.single['security_version'] != _centralSecurityVersion) {
+        logout();
+        throw const CapcException(
+          'La sesión central ya no es válida. Inicia sesión otra vez.',
+        );
+      }
+      return session;
+    }
     final rows = await (executor ?? _db).query(
       'users',
       where: 'id = ? AND business_id = ?',
@@ -415,7 +679,7 @@ class CapcRepository {
   }
 
   Future<List<LocalUser>> listUsers() => _run(() async {
-    await _require(Permission.manageUsers);
+    await _require(Permission.manageUsers, null, 'usuarios.ver');
     return (await _db.query(
       'users',
       where: 'business_id = ?',
@@ -432,7 +696,15 @@ class CapcRepository {
     String? password,
     bool active = true,
   }) => _run(() async {
-    await _require(Permission.manageUsers);
+    await _require(
+      Permission.manageUsers,
+      null,
+      id == null || id.isEmpty
+          ? 'usuarios.crear'
+          : active
+          ? 'usuarios.editar'
+          : 'usuarios.eliminar',
+    );
     final userId = id == null || id.isEmpty ? _uuid.v4() : _id(id);
     final displayName = _text(name, 'El nombre', 160);
     final loginName = _text(username, 'El usuario', 80).toLowerCase();
@@ -440,7 +712,15 @@ class CapcRepository {
         ? null
         : await _hashPassword(password);
     await _db.transaction((txn) async {
-      final actor = await _require(Permission.manageUsers, txn);
+      final actor = await _require(
+        Permission.manageUsers,
+        txn,
+        id == null || id.isEmpty
+            ? 'usuarios.crear'
+            : active
+            ? 'usuarios.editar'
+            : 'usuarios.eliminar',
+      );
       final rows = await txn.query(
         'users',
         where: 'id = ? AND business_id = ?',
@@ -515,12 +795,116 @@ class CapcRepository {
     active: row['active'] == 1,
   );
 
+  Future<BusinessProfile> getBusinessProfile() => _run(() async {
+    await _require(Permission.read, null, 'configuracion.ver');
+    final rows = await _db.query(
+      'business_profiles',
+      where: 'business_id=?',
+      whereArgs: [businessId],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      throw const CapcException('No se encontró la configuración del negocio.');
+    }
+    return _businessProfile(rows.single);
+  });
+
+  Future<void> saveBusinessProfile(BusinessProfile profile) => _run(() async {
+    final name = _text(profile.name, 'El nombre del negocio', 160);
+    final phone = _optionalText(profile.phone, 'El teléfono', 80);
+    final address = _optionalText(profile.address, 'La dirección', 500);
+    final email = _optionalText(profile.email, 'El correo', 320).toLowerCase();
+    if (email.isNotEmpty &&
+        !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email)) {
+      throw const CapcException('El correo del negocio no es válido.');
+    }
+    Object? configuration;
+    try {
+      configuration = jsonDecode(profile.configurationJson);
+    } on FormatException {
+      throw const CapcException('La configuración adicional no es válida.');
+    }
+    if (configuration is! Map || profile.configurationJson.length > 20000) {
+      throw const CapcException('La configuración adicional no es válida.');
+    }
+    if (profile.logoBytes != null &&
+        profile.logoBytes!.length > 2 * 1024 * 1024) {
+      throw const CapcException('El logotipo no puede superar 2 MB.');
+    }
+    await _db.transaction((txn) async {
+      final actor = await _require(
+        Permission.manageSettings,
+        txn,
+        'configuracion.editar',
+      );
+      final current = await txn.query(
+        'business_profiles',
+        where: 'business_id=?',
+        whereArgs: [businessId],
+        limit: 1,
+      );
+      final now = _now();
+      final revision = current.isEmpty
+          ? 1
+          : (current.single['revision'] as int) + 1;
+      final record = <String, Object?>{
+        'id': businessId,
+        'business_id': businessId,
+        'device_id': deviceId,
+        'name': name,
+        'phone': phone,
+        'address': address,
+        'email': email,
+        'configuration': jsonEncode(configuration),
+        'logo': profile.logoBytes,
+        'logo_mime': profile.logoMime,
+        'updated_at': now,
+        'updated_by': actor.id,
+        'revision': revision,
+        'deleted_at': null,
+      };
+      await txn.insert(
+        'business_profiles',
+        record,
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      final syncRecord = <String, Object?>{
+        ...record,
+        if (profile.logoBytes != null) 'logo': base64Encode(profile.logoBytes!),
+      };
+      await _audit(txn, 'business.saved', businessId, {
+        'name': name,
+        'phone': phone,
+        'address': address,
+        'email': email,
+        'revision': revision,
+      }, now);
+      await _enqueue(txn, 'business.saved', syncRecord, now);
+    });
+  });
+
+  static BusinessProfile _businessProfile(Map<String, Object?> row) =>
+      BusinessProfile(
+        id: row['id'] as String,
+        name: row['name'] as String,
+        phone: row['phone'] as String? ?? '',
+        address: row['address'] as String? ?? '',
+        email: row['email'] as String? ?? '',
+        configurationJson: row['configuration'] as String? ?? '{}',
+        logoBytes: (row['logo'] as List<int>?),
+        logoMime: row['logo_mime'] as String?,
+        revision: row['revision'] as int? ?? 1,
+        updatedAt: row['updated_at'] == null
+            ? null
+            : DateTime.parse(row['updated_at'] as String).toUtc(),
+      );
+
   Future<List<Product>> listProducts({String query = ''}) => _run(() async {
-    await _require(Permission.read);
+    await _require(Permission.read, null, 'productos.ver');
     final rows = await _db.query(
       'products',
       where:
-          "business_id = ? AND (code LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\')",
+          "business_id = ? AND deleted_at IS NULL AND (code LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\')",
       whereArgs: [businessId, _search(query), _search(query)],
       orderBy: 'name COLLATE NOCASE, code',
     );
@@ -529,7 +913,11 @@ class CapcRepository {
 
   Future<void> saveProduct(Product product) => _run(() async {
     await _db.transaction((txn) async {
-      await _require(Permission.manageCatalog, txn);
+      await _require(
+        Permission.manageCatalog,
+        txn,
+        product.id.trim().isEmpty ? 'productos.crear' : 'productos.editar',
+      );
       await _saveProductTxn(txn, product);
     });
   });
@@ -555,7 +943,7 @@ class CapcRepository {
       );
     }
     return _db.transaction((txn) async {
-      await _require(Permission.manageCatalog, txn);
+      await _require(Permission.manageCatalog, txn, 'productos.crear');
       for (var index = 0; index < entries.length; index++) {
         try {
           await _saveProductTxn(txn, entries[index], insertOnly: true);
@@ -571,7 +959,7 @@ class CapcRepository {
           rethrow;
         }
       }
-      await _require(Permission.manageCatalog, txn);
+      await _require(Permission.manageCatalog, txn, 'productos.crear');
       await _audit(txn, 'catalog.imported', businessId, {
         'count': entries.length,
       }, _now());
@@ -614,6 +1002,11 @@ class CapcRepository {
     if (current.isNotEmpty && current.first['stock'] != product.stock) {
       throw const CapcException(
         'Las existencias cambiaron. Actualiza el catálogo y usa Ajustar stock con un motivo.',
+      );
+    }
+    if (current.isNotEmpty && current.first['deleted_at'] != null) {
+      throw const CapcException(
+        'El producto fue eliminado y no se puede editar.',
       );
     }
     if (current.isNotEmpty &&
@@ -685,7 +1078,7 @@ class CapcRepository {
       _quantity(grouped[item.productId]!);
     }
     await _db.transaction((txn) async {
-      await _require(Permission.manageCatalog, txn);
+      await _require(Permission.manageCatalog, txn, 'productos.editar');
       if (!(await _getProduct(txn, id)).isService) {
         throw const CapcException('La receta corresponde a un servicio.');
       }
@@ -717,7 +1110,7 @@ class CapcRepository {
 
   Future<List<ServiceMaterial>> listServiceRecipe(String serviceId) =>
       _run(() async {
-        await _require(Permission.read);
+        await _require(Permission.read, null, 'productos.ver');
         return (await _db.query(
               'service_materials',
               where: 'service_id = ? AND business_id = ?',
@@ -754,7 +1147,7 @@ class CapcRepository {
       'totalCost': totalCost,
     });
     await _db.transaction((txn) async {
-      await _require(Permission.adjustStock, txn);
+      await _require(Permission.adjustStock, txn, 'inventario.ajustar');
       if (await _operation(txn, opId, 'stock.adjust', request) != null) return;
       final product = await _getProduct(txn, id);
       if (delta > 0 && totalCost == null && !product.costKnown) {
@@ -893,6 +1286,14 @@ class CapcRepository {
       'kind': kind,
       'referenceId': referenceId,
     }, now);
+    if (kind == 'Inicial') {
+      final movement = (await txn.query(
+        'stock_movements',
+        where: 'id = ?',
+        whereArgs: [id],
+      )).single;
+      await _enqueueInitialStock(txn, movement);
+    }
     return StockMovement(
       id: id,
       productId: productId,
@@ -910,7 +1311,7 @@ class CapcRepository {
   Future<List<StockMovement>> listStockMovements({
     String? productId,
   }) => _run(() async {
-    await _require(Permission.adjustStock);
+    await _require(Permission.adjustStock, null, 'inventario.ver');
     return (await _db.query(
           'stock_movements',
           where:
@@ -936,11 +1337,11 @@ class CapcRepository {
   });
 
   Future<List<Customer>> listCustomers({String query = ''}) => _run(() async {
-    await _require(Permission.read);
+    await _require(Permission.read, null, 'clientes.ver');
     return (await _db.query(
           'customers',
           where:
-              "business_id = ? AND (name LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\')",
+              "business_id = ? AND deleted_at IS NULL AND (name LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\')",
           whereArgs: [businessId, _search(query), _search(query)],
           orderBy: 'name COLLATE NOCASE, id',
         ))
@@ -957,7 +1358,11 @@ class CapcRepository {
   Future<void> saveCustomer(Customer customer) => _run(() async {
     final id = customer.id.trim().isEmpty ? _uuid.v4() : _id(customer.id);
     await _db.transaction((txn) async {
-      await _require(Permission.manageCustomers, txn);
+      await _require(
+        Permission.manageCustomers,
+        txn,
+        customer.id.trim().isEmpty ? 'clientes.crear' : 'clientes.editar',
+      );
       final current = await txn.query(
         'customers',
         where: 'id = ? AND business_id = ?',
@@ -971,6 +1376,11 @@ class CapcRepository {
             ? 1
             : (current.single['revision'] as int) + 1,
       };
+      if (current.isNotEmpty && current.single['deleted_at'] != null) {
+        throw const CapcException(
+          'El cliente fue eliminado y no se puede editar.',
+        );
+      }
       if (current.isEmpty) {
         await txn.insert('customers', {
           'id': id,
@@ -986,9 +1396,90 @@ class CapcRepository {
     });
   });
 
+  Future<void> deleteProduct(String productId) => _run(() async {
+    final id = _id(productId);
+    await _db.transaction((txn) async {
+      final actor = await _require(
+        Permission.manageCatalog,
+        txn,
+        'productos.eliminar',
+      );
+      final rows = await txn.query(
+        'products',
+        where: 'id=? AND business_id=? AND deleted_at IS NULL',
+        whereArgs: [id, businessId],
+      );
+      if (rows.isEmpty) return;
+      if (rows.single['stock'] != 0) {
+        throw const CapcException(
+          'Ajusta las existencias a cero antes de eliminar el producto.',
+        );
+      }
+      final now = _now();
+      final revision = (rows.single['revision'] as int) + 1;
+      await txn.update(
+        'products',
+        {'deleted_at': now, 'revision': revision, 'updated_at': now},
+        where: 'id=? AND business_id=?',
+        whereArgs: [id, businessId],
+      );
+      final payload = {
+        'id': id,
+        'deleted_at': now,
+        'deleted_by': actor.id,
+        'revision': revision,
+      };
+      await _audit(txn, 'product.deleted', id, payload, now);
+      await _enqueue(txn, 'product.deleted', payload, now);
+    });
+  });
+
+  Future<void> deleteCustomer(String customerId) => _run(() async {
+    final id = _id(customerId);
+    await _db.transaction((txn) async {
+      final actor = await _require(
+        Permission.manageCustomers,
+        txn,
+        'clientes.eliminar',
+      );
+      final debt = await txn.rawQuery(
+        '''SELECT 1 FROM sales WHERE business_id=? AND customer_id=?
+           AND total-returned_total-paid>0 LIMIT 1''',
+        [businessId, id],
+      );
+      if (debt.isNotEmpty) {
+        throw const CapcException(
+          'No se puede eliminar un cliente con saldos pendientes.',
+        );
+      }
+      final rows = await txn.query(
+        'customers',
+        where: 'id=? AND business_id=? AND deleted_at IS NULL',
+        whereArgs: [id, businessId],
+      );
+      if (rows.isEmpty) return;
+      final now = _now();
+      final revision = (rows.single['revision'] as int) + 1;
+      await txn.update(
+        'customers',
+        {'deleted_at': now, 'revision': revision, 'updated_at': now},
+        where: 'id=? AND business_id=?',
+        whereArgs: [id, businessId],
+      );
+      final payload = {
+        'id': id,
+        'deleted_at': now,
+        'deleted_by': actor.id,
+        'revision': revision,
+      };
+      await _audit(txn, 'customer.deleted', id, payload, now);
+      await _enqueue(txn, 'customer.deleted', payload, now);
+    });
+  });
+
   Future<void> loadExampleCatalog() => _run(() async {
     await _db.transaction((txn) async {
-      await _require(Permission.manageCatalog, txn);
+      await _require(Permission.manageCatalog, txn, 'productos.crear');
       if ((await txn.query(
         'products',
         columns: ['id'],
@@ -1051,7 +1542,7 @@ class CapcRepository {
     });
   });
   Future<List<Sale>> listSales({String query = ''}) => _run(() async {
-    await _require(Permission.read);
+    await _require(Permission.read, null, 'ventas.ver');
     return _db.transaction((txn) async {
       final rows = await txn.query(
         'sales',
@@ -1076,10 +1567,10 @@ class CapcRepository {
     List<CustomSaleItem> customItems = const [],
   }) => _run(() async {
     return _db.transaction((txn) async {
-      await _require(Permission.sell, txn);
+      await _require(Permission.sell, txn, 'ventas.crear');
       if (items.any((line) => line.unitPrice != null) ||
           customItems.isNotEmpty) {
-        await _require(Permission.setPrices, txn);
+        await _require(Permission.setPrices, txn, 'precios.editar');
       }
       return _createSaleInTxn(
         txn,
@@ -1108,7 +1599,7 @@ class CapcRepository {
     int prepaid = 0,
     String? sourceQuoteId,
   }) async {
-    final actor = await _require(Permission.sell, txn);
+    final actor = await _require(Permission.sell, txn, 'ventas.crear');
     if (items.isEmpty && customItems.isEmpty) {
       throw const CapcException('Agrega al menos un producto o servicio.');
     }
@@ -1177,7 +1668,7 @@ class CapcRepository {
     if (customer != null) {
       final rows = await txn.query(
         'customers',
-        where: 'id = ? AND business_id = ?',
+        where: 'id = ? AND business_id = ? AND deleted_at IS NULL',
         whereArgs: [customer, businessId],
       );
       if (rows.isEmpty) {
@@ -1486,7 +1977,7 @@ class CapcRepository {
       'received': tendered,
     });
     await _db.transaction((txn) async {
-      await _require(Permission.collect, txn);
+      await _require(Permission.collect, txn, 'ventas.editar');
       if (await _operation(txn, opId, 'payment.add', request) != null) return;
       final sale = await _getSale(txn, id);
       if (sale.cancelled || amount > sale.balance) {
@@ -1578,7 +2069,7 @@ class CapcRepository {
     String saleId,
     int amount,
   ) async {
-    await _require(Permission.collect, txn);
+    await _require(Permission.collect, txn, 'ventas.editar');
     _money(amount, 'El anticipo aplicado', positive: true);
     final sale = await _getSale(txn, saleId);
     if (sale.cancelled || amount > sale.balance) {
@@ -1594,7 +2085,7 @@ class CapcRepository {
   }
 
   Future<List<Payment>> listPayments({String? saleId}) => _run(() async {
-    await _require(Permission.read);
+    await _require(Permission.read, null, 'ventas.ver');
     final rows = await _db.query(
       'payments',
       where: 'business_id = ?${saleId == null ? '' : ' AND sale_id = ?'}',
@@ -1676,7 +2167,11 @@ class CapcRepository {
       ],
     });
     return _db.transaction((txn) async {
-      await _require(Permission.returns, txn);
+      await _require(
+        Permission.returns,
+        txn,
+        cancel ? 'ventas.anular' : 'devoluciones.crear',
+      );
       final kind = cancel ? 'sale.cancel' : 'sale.return';
       if (await _operation(txn, opId, kind, request) != null) {
         return _getSale(txn, id);
@@ -1953,7 +2448,7 @@ class CapcRepository {
 
   Future<List<SaleReturnRecord>> listSaleReturns({String? saleId}) =>
       _run(() async {
-        await _require(Permission.read);
+        await _require(Permission.read, null, 'ventas.ver');
         final records = await _db.query(
           'sale_returns',
           where: 'business_id = ?${saleId == null ? '' : ' AND sale_id = ?'}',
@@ -2030,7 +2525,7 @@ class CapcRepository {
   }
 
   Future<CashSession?> currentCashSession() => _run(() async {
-    await _require(Permission.manageCash);
+    await _require(Permission.manageCash, null, 'caja.ver');
     return _db.transaction((txn) async {
       final rows = await txn.query(
         'cash_sessions',
@@ -2047,7 +2542,11 @@ class CapcRepository {
         final opId = operationId == null ? _uuid.v4() : _id(operationId);
         final request = jsonEncode({'openingAmount': openingAmount});
         return _db.transaction((txn) async {
-          final actor = await _require(Permission.manageCash, txn);
+          final actor = await _require(
+            Permission.manageCash,
+            txn,
+            'caja.abrir',
+          );
           final previous = await _operation(txn, opId, 'cash.open', request);
           if (previous != null) {
             return _cashSession(
@@ -2120,7 +2619,7 @@ class CapcRepository {
       'note': explanation,
     });
     return _db.transaction((txn) async {
-      final actor = await _require(Permission.manageCash, txn);
+      final actor = await _require(Permission.manageCash, txn, 'caja.cerrar');
       final previous = await _operation(txn, opId, 'cash.close', request);
       if (previous != null) {
         return _cashSession(
@@ -2283,7 +2782,11 @@ class CapcRepository {
       'reason': explanation,
     });
     await _db.transaction((txn) async {
-      await _require(Permission.expense, txn);
+      await _require(
+        Permission.expense,
+        txn,
+        expense ? 'gastos.crear' : 'caja.movimientos',
+      );
       if (await _operation(txn, opId, kind, request) != null) return;
       final id = _uuid.v4(), now = _now();
       await _recordCash(
@@ -2341,7 +2844,7 @@ class CapcRepository {
   });
 
   Future<List<CashSession>> listCashSessions() => _run(() async {
-    final actor = await _require(Permission.manageCash);
+    final actor = await _require(Permission.manageCash, null, 'caja.ver');
     return _db.transaction((txn) async {
       final rows = await txn.query(
         'cash_sessions',
@@ -2377,7 +2880,7 @@ class CapcRepository {
   Future<List<CashMovement>> listCashMovements({
     String? sessionId,
   }) => _run(() async {
-    final actor = await _require(Permission.manageCash);
+    final actor = await _require(Permission.manageCash, null, 'caja.ver');
     final rows = await _db.query(
       'cash_movements',
       where:
@@ -2407,7 +2910,7 @@ class CapcRepository {
   });
 
   Future<List<AuditEntry>> listAudit() => _run(() async {
-    await _require(Permission.viewAudit);
+    await _require(Permission.viewAudit, null, 'auditoria.ver');
     return (await _db.query(
           'audit',
           where: 'business_id = ?',
@@ -2427,7 +2930,7 @@ class CapcRepository {
         .toList();
   });
   Future<void> backupTo(String destination) => _run(() async {
-    await _require(Permission.backup);
+    await _require(Permission.backup, null, 'respaldos.crear');
     final target = p.normalize(
       p.absolute(_text(destination, 'La ubicación', 4096)),
     );
@@ -2438,7 +2941,7 @@ class CapcRepository {
     }
     await _snapshotTo(target);
     await _db.transaction((txn) async {
-      await _require(Permission.backup, txn);
+      await _require(Permission.backup, txn, 'respaldos.crear');
       await _audit(txn, 'backup.created', businessId, {
         'destination': target,
       }, _now());
@@ -2528,6 +3031,7 @@ class CapcRepository {
           'work_advances',
         },
         if (version >= 3) ...{'inbox', 'sync_state', 'sync_conflicts'},
+        if (version >= 8) 'central_auth_cache',
       };
       if (!tables.containsAll(required)) {
         throw const CapcException('Al respaldo le faltan tablas necesarias.');
@@ -2601,7 +3105,9 @@ class CapcRepository {
     String source, {
     Future<void> Function(String stage)? onProgress,
   }) async {
-    final actor = await _run(() => _require(Permission.restore));
+    final actor = await _run(
+      () => _require(Permission.restore, null, 'respaldos.restaurar'),
+    );
     final target = p.normalize(p.absolute(source));
     if (_samePath(target, databasePath) ||
         databasePath == inMemoryDatabasePath) {
@@ -2639,7 +3145,7 @@ class CapcRepository {
     };
     try {
       restoreLock = await _acquireRestoreLock(databasePath);
-      await _require(Permission.restore);
+      await _require(Permission.restore, null, 'respaldos.restaurar');
       // VACUUM INTO reads a coherent source even if a chosen database has WAL data.
       await _copySnapshot(target, staged);
       await validateBackup(staged);
@@ -3180,7 +3686,7 @@ class CapcRepository {
   Future<Product> _getProduct(DatabaseExecutor db, String id) async {
     final rows = await db.query(
       'products',
-      where: 'id = ? AND business_id = ?',
+      where: 'id = ? AND business_id = ? AND deleted_at IS NULL',
       whereArgs: [id, businessId],
     );
     if (rows.isEmpty) {
@@ -3403,18 +3909,49 @@ class CapcRepository {
     String now, {
     String? operationId,
   }) async {
+    final actor = _session;
+    final content = <String, Object?>{
+      ...payload,
+      if (actor != null)
+        '_audit': {
+          'actor_id': actor.id,
+          'actor_name': actor.name,
+          'username': actor.username,
+          'central': actor.central,
+          if (actor.centralRoleType != null) 'role_type': actor.centralRoleType,
+        },
+    };
     await db.insert('outbox', {
       'id': _uuid.v4(),
       'operation_id': operationId ?? _uuid.v4(),
       'kind': kind,
       'schema_version': 1,
-      'payload': jsonEncode(payload),
+      'payload': jsonEncode(content),
       'created_at': now,
       'state': 'pending',
       'business_id': businessId,
       'device_id': deviceId,
     });
   }
+
+  Future<void> _enqueueInitialStock(
+    DatabaseExecutor db,
+    Map<String, Object?> movement,
+  ) => _enqueue(
+    db,
+    'stock.adjusted',
+    {
+      'movementId': movement['id'],
+      'productId': movement['product_id'],
+      'delta': movement['delta'],
+      'costMicros': movement['cost_micros'],
+      'reason': movement['reason'],
+      'movement': movement,
+    },
+    movement['created_at'] as String,
+    // Stable identity also makes recovery of old, unqueued entries idempotent.
+    operationId: movement['id'] as String,
+  );
 
   Future<void> _audit(
     DatabaseExecutor txn,
@@ -3450,6 +3987,18 @@ class CapcRepository {
     await db.insert('settings', {
       'key': 'business_id',
       'value': businessValue,
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    await db.insert('business_profiles', {
+      'id': businessValue,
+      'business_id': businessValue,
+      'device_id': deviceValue,
+      'name': 'CAPC MULTISERVICIO',
+      'phone': '',
+      'address': '',
+      'email': '',
+      'configuration': '{}',
+      'updated_at': _now(),
+      'revision': 1,
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
     await db.insert('settings', {
       'key': 'device_id',
@@ -3705,13 +4254,90 @@ class CapcRepository {
     }
   }
 
+  static Future<void> _migrateV4ToV5(DatabaseExecutor db) async {
+    final columns = await db.rawQuery('PRAGMA table_info(outbox)');
+    final names = columns.map((column) => column['name']).toSet();
+    if (!names.contains('retryable')) {
+      await db.execute(
+        'ALTER TABLE outbox ADD COLUMN retryable INTEGER NOT NULL DEFAULT 1 CHECK(retryable IN (0,1))',
+      );
+    }
+    if (!names.contains('next_attempt_at')) {
+      await db.execute('ALTER TABLE outbox ADD COLUMN next_attempt_at TEXT');
+    }
+    if (!names.contains('error_code')) {
+      await db.execute('ALTER TABLE outbox ADD COLUMN error_code TEXT');
+    }
+  }
+
+  static Future<void> _migrateV5ToV6(DatabaseExecutor db) async {
+    await db.execute(_businessProfileSchema);
+    final settings = await db.query('settings');
+    String? value(String key) {
+      for (final row in settings) {
+        if (row['key'] == key) return row['value'] as String;
+      }
+      return null;
+    }
+
+    final business = value('business_id');
+    final device = value('device_id');
+    if (business != null && device != null) {
+      await db.insert('business_profiles', {
+        'id': business,
+        'business_id': business,
+        'device_id': device,
+        'name': 'CAPC MULTISERVICIO',
+        'phone': '',
+        'address': '',
+        'email': '',
+        'configuration': '{}',
+        'updated_at': _now(),
+        'revision': 1,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+  }
+
+  static Future<void> _migrateV6ToV7(DatabaseExecutor db) async {
+    for (final table in ['products', 'customers', 'suppliers']) {
+      final columns = await db.rawQuery('PRAGMA table_info($table)');
+      if (!columns.any((column) => column['name'] == 'deleted_at')) {
+        await db.execute('ALTER TABLE $table ADD COLUMN deleted_at TEXT');
+      }
+    }
+  }
+
+  static Future<void> _migrateV7ToV8(DatabaseExecutor db) async {
+    await db.execute(_centralAuthCacheSchema);
+  }
+
+  static const _centralAuthCacheSchema =
+      '''CREATE TABLE IF NOT EXISTS central_auth_cache (
+      user_id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
+      name TEXT NOT NULL, username TEXT NOT NULL COLLATE NOCASE,
+      role_type TEXT NOT NULL CHECK(role_type IN ('administrator','operational')),
+      security_version INTEGER NOT NULL CHECK(security_version>0), permissions_json TEXT NOT NULL,
+      grant_expires_at TEXT NOT NULL, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL,
+      failed_login INTEGER NOT NULL DEFAULT 0, locked_until TEXT, updated_at TEXT NOT NULL,
+      UNIQUE(business_id,device_id,username))''';
+
+  static const _businessProfileSchema =
+      '''CREATE TABLE IF NOT EXISTS business_profiles (
+      id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL UNIQUE, device_id TEXT NOT NULL,
+      name TEXT NOT NULL, phone TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '',
+      email TEXT NOT NULL DEFAULT '', configuration TEXT NOT NULL DEFAULT '{}',
+      logo BLOB, logo_mime TEXT, updated_at TEXT NOT NULL, updated_by TEXT,
+      revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0), deleted_at TEXT)''';
+
   static const _outboxSchema = '''CREATE TABLE IF NOT EXISTS outbox (
       id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
       operation_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, schema_version INTEGER NOT NULL,
       payload TEXT NOT NULL, created_at TEXT NOT NULL,
       state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','sending','acknowledged','error')),
       retry_count INTEGER NOT NULL DEFAULT 0 CHECK(retry_count>=0), last_attempt_at TEXT,
-      acknowledged_at TEXT, server_cursor INTEGER, last_error TEXT)''';
+      acknowledged_at TEXT, server_cursor INTEGER, last_error TEXT,
+      retryable INTEGER NOT NULL DEFAULT 1 CHECK(retryable IN (0,1)),
+      next_attempt_at TEXT, error_code TEXT)''';
 
   static const _syncSchema = <String>[
     '''CREATE TABLE IF NOT EXISTS inbox (
@@ -3738,6 +4364,7 @@ class CapcRepository {
 
   static const _schema = <String>[
     'CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)',
+    _businessProfileSchema,
     '''CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
       name TEXT NOT NULL, username TEXT NOT NULL COLLATE NOCASE, role TEXT NOT NULL CHECK(role IN ('owner','admin','cashier')),
@@ -3745,6 +4372,7 @@ class CapcRepository {
       password_algorithm TEXT NOT NULL DEFAULT 'argon2id:m19456:t2:p1:v19',
       session_version INTEGER NOT NULL DEFAULT 0, failed_login INTEGER NOT NULL DEFAULT 0, locked_until TEXT,
       created_at TEXT NOT NULL, UNIQUE(business_id,username))''',
+    _centralAuthCacheSchema,
     '''CREATE TABLE IF NOT EXISTS products (
       id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
       code TEXT NOT NULL COLLATE NOCASE, name TEXT NOT NULL, unit TEXT NOT NULL,
@@ -3754,6 +4382,7 @@ class CapcRepository {
       inventory_value_micros INTEGER NOT NULL DEFAULT 0 CHECK(inventory_value_micros>=0),
       cost_known INTEGER NOT NULL DEFAULT 1 CHECK(cost_known IN (0,1)), cost_basis TEXT NOT NULL DEFAULT 'weighted',
       updated_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0),
+      deleted_at TEXT,
       UNIQUE(business_id,code), CHECK(is_service=0 OR (stock=0 AND minimum_stock=0)))''',
     '''CREATE TABLE IF NOT EXISTS service_materials (
       service_id TEXT NOT NULL REFERENCES products(id), product_id TEXT NOT NULL REFERENCES products(id),
@@ -3761,7 +4390,7 @@ class CapcRepository {
     '''CREATE TABLE IF NOT EXISTS customers (
       id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
       name TEXT NOT NULL, phone TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
-      revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0))''',
+      revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0), deleted_at TEXT)''',
     '''CREATE TABLE IF NOT EXISTS sales (
       id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
       number TEXT NOT NULL, sequence INTEGER NOT NULL, created_at TEXT NOT NULL,

@@ -1,9 +1,13 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import '../data/repository.dart';
 import '../services/documents.dart';
 import '../services/document_preview.dart';
 import '../services/reporting.dart';
+import '../sync/remote_identity.dart';
+import '../sync/sync_models.dart';
 import 'line_editor.dart';
 import 'spreadsheet_actions.dart';
 import 'ui_shared.dart';
@@ -14,20 +18,24 @@ class ManagementPage extends StatefulWidget {
     required this.repository,
     required this.page,
     required this.onChanged,
+    this.remoteIdentity,
+    this.onOpenCentralAccess,
     this.refreshRevision = 0,
   });
   final CapcRepository repository;
   final int page;
   final int refreshRevision;
   final Future<void> Function() onChanged;
+  final RemoteIdentityController? remoteIdentity;
+  final VoidCallback? onOpenCentralAccess;
   @override
   State<ManagementPage> createState() => _ManagementState();
 }
 
 class _ManagementState extends State<ManagementPage> {
   CapcRepository get repo => widget.repository;
-  bool get manager => repo.currentUser?.role != UserRole.cashier;
   bool get owner => repo.currentUser?.role == UserRole.owner;
+  bool can(String permission) => repo.hasPermission(permission);
   bool loading = true, busy = false;
   String? error;
   String query = '';
@@ -39,6 +47,8 @@ class _ManagementState extends State<ManagementPage> {
   List<WorkOrder> works = [];
   List<LocalUser> users = [];
   List<AuditEntry> audits = [];
+  List<RemoteSecurityAudit> remoteAudits = [];
+  List<SyncConflictRecord> conflicts = [];
   List<CashSession> sessions = [];
   List<CashMovement> movements = [];
   CashSession? current;
@@ -57,24 +67,42 @@ class _ManagementState extends State<ManagementPage> {
   Future<void> refresh() async {
     try {
       if (widget.page == 7) {
-        current = await repo.currentCashSession();
-        sessions = await repo.listCashSessions();
-        movements = await repo.listCashMovements();
+        if (can('caja.ver')) {
+          current = await repo.currentCashSession();
+          sessions = await repo.listCashSessions();
+          movements = await repo.listCashMovements();
+        }
       }
       if (widget.page == 8) {
-        suppliers = await repo.listSuppliers();
-        purchases = await repo.listPurchases();
-        products = await repo.listProducts();
+        if (can('proveedores.ver')) suppliers = await repo.listSuppliers();
+        if (can('compras.ver')) purchases = await repo.listPurchases();
+        if (can('productos.ver')) products = await repo.listProducts();
       }
       if (widget.page == 9) {
-        quotes = await repo.listQuotes();
-        works = await repo.listWorkOrders();
-        products = await repo.listProducts();
-        customers = await repo.listCustomers();
+        if (can('cotizaciones.ver')) quotes = await repo.listQuotes();
+        if (can('trabajos.ver')) works = await repo.listWorkOrders();
+        if (can('productos.ver')) products = await repo.listProducts();
+        if (can('clientes.ver')) customers = await repo.listCustomers();
       }
       if (widget.page == 10) {
         if (owner) users = await repo.listUsers();
-        audits = await repo.listAudit();
+        if (repo.hasPermission('auditoria.ver')) {
+          audits = await repo.listAudit();
+          final remote = widget.remoteIdentity;
+          if (remote?.connected == true &&
+              (remote!.session!.permissions.contains('auditoria.ver') ||
+                  remote.session!.permissions.contains('access:read'))) {
+            try {
+              remoteAudits = await remote.listSecurityAudit();
+            } catch (_) {
+              // La auditoria local debe seguir disponible si el servidor no responde.
+              remoteAudits = [];
+            }
+          }
+        }
+        if (repo.hasPermission('conflictos.ver')) {
+          conflicts = await repo.listSyncConflicts();
+        }
       }
       if (mounted) {
         setState(() {
@@ -178,60 +206,61 @@ class _ManagementState extends State<ManagementPage> {
           ? 'Abre una caja antes de registrar ventas, abonos, gastos o pagos.'
           : 'Apertura: ${localDate(current!.openedAt)} · ${current!.openedBy}',
       actions: [
-        if (current == null)
+        if (current == null && can('caja.abrir'))
           button(
             'Abrir caja',
             Icons.lock_open,
             () => cashOpen(),
             primary: true,
           ),
-        if (current != null)
+        if (current != null && can('caja.cerrar'))
           button(
             'Cerrar caja',
             Icons.lock_outline,
             () => cashClose(),
             primary: true,
           ),
-        if (current != null && manager)
+        if (current != null && can('gastos.crear'))
           button('Registrar gasto', Icons.money_off, () => expense()),
-        if (current != null && manager)
+        if (current != null && can('caja.movimientos'))
           button(
             'Entrada / retiro de caja',
             Icons.swap_vert,
             () => cashAdjustment(),
           ),
-        button(
-          'Reporte de caja / PDF',
-          Icons.description_outlined,
-          () => showCapcDocument(
-            context,
-            title: 'Caja y movimientos',
-            build: () => CapcDocuments.buildTableDocument(
-              title: 'Movimientos de caja',
-              headers: [
-                'Fecha Bogotá',
-                'Concepto',
-                'Método',
-                'Importe',
-                'Responsable',
-              ],
-              rows: movements
-                  .map(
-                    (m) => [
-                      localDate(m.createdAt),
-                      m.reason,
-                      m.method,
-                      cop(m.amount),
-                      m.actorName,
-                    ],
-                  )
-                  .toList(),
-              notes: [
-                'El efectivo esperado incluye la base y los movimientos en efectivo. Transferencias y tarjeta se muestran por separado.',
-              ],
+        if (can('caja.ver'))
+          button(
+            'Reporte de caja / PDF',
+            Icons.description_outlined,
+            () => showCapcDocument(
+              context,
+              title: 'Caja y movimientos',
+              build: () => CapcDocuments.buildTableDocument(
+                title: 'Movimientos de caja',
+                headers: [
+                  'Fecha Bogotá',
+                  'Concepto',
+                  'Método',
+                  'Importe',
+                  'Responsable',
+                ],
+                rows: movements
+                    .map(
+                      (m) => [
+                        localDate(m.createdAt),
+                        m.reason,
+                        m.method,
+                        cop(m.amount),
+                        m.actorName,
+                      ],
+                    )
+                    .toList(),
+                notes: [
+                  'El efectivo esperado incluye la base y los movimientos en efectivo. Transferencias y tarjeta se muestran por separado.',
+                ],
+              ),
             ),
           ),
-        ),
       ],
       children: [
         if (current != null) ...[
@@ -374,13 +403,15 @@ class _ManagementState extends State<ManagementPage> {
       subtitle:
           'Registra la compra y confirma su recepción cuando los materiales estén disponibles.',
       actions: [
-        button(
-          'Nueva compra',
-          Icons.add_shopping_cart,
-          () => createPurchase(),
-          primary: true,
-        ),
-        button('Nuevo proveedor', Icons.person_add_alt, () => supplierForm()),
+        if (can('compras.crear'))
+          button(
+            'Nueva compra',
+            Icons.add_shopping_cart,
+            () => createPurchase(),
+            primary: true,
+          ),
+        if (can('proveedores.crear'))
+          button('Nuevo proveedor', Icons.person_add_alt, () => supplierForm()),
       ],
     ),
     for (final supplier in suppliers.where(
@@ -390,11 +421,12 @@ class _ManagementState extends State<ManagementPage> {
         title: supplier.name,
         subtitle: '${supplier.phone} · ${supplier.document}',
         actions: [
-          button(
-            'Editar proveedor',
-            Icons.edit_outlined,
-            () => supplierForm(supplier),
-          ),
+          if (can('proveedores.editar'))
+            button(
+              'Editar proveedor',
+              Icons.edit_outlined,
+              () => supplierForm(supplier),
+            ),
         ],
         children: [
           Text(
@@ -411,7 +443,7 @@ class _ManagementState extends State<ManagementPage> {
         subtitle:
             '${p.status} · ${p.received ? 'Material recibido' : 'Pendiente de recepción'} · ${localDate(p.createdAt)}',
         actions: [
-          if (!p.received)
+          if (!p.received && can('compras.recibir'))
             button('Recibir materiales', Icons.inventory_2_outlined, () async {
               if (await confirmAction(
                 context,
@@ -424,7 +456,7 @@ class _ManagementState extends State<ManagementPage> {
                 );
               }
             }),
-          if (p.balance > 0)
+          if (p.balance > 0 && can('compras.abonar'))
             button(
               'Pagar / abonar',
               Icons.payments_outlined,
@@ -616,8 +648,9 @@ class _ManagementState extends State<ManagementPage> {
   }
 
   bool canEditQuote(Quote quote) =>
+      can('cotizaciones.editar') &&
       quote.status == QuoteStatus.draft &&
-      (manager ||
+      (can('precios.editar') ||
           quote.lines.every(
             (line) => products.any(
               (p) => p.id == line.productId && p.salePrice == line.unitPrice,
@@ -648,13 +681,15 @@ class _ManagementState extends State<ManagementPage> {
       subtitle:
           'Las cotizaciones no afectan inventario ni caja. Una cotización aceptada puede convertirse en venta una sola vez.',
       actions: [
-        button(
-          'Nueva cotización',
-          Icons.request_quote_outlined,
-          () => createQuote(),
-          primary: true,
-        ),
-        button('Recibir trabajo', Icons.assignment_add, () => createWork()),
+        if (can('cotizaciones.crear'))
+          button(
+            'Nueva cotización',
+            Icons.request_quote_outlined,
+            () => createQuote(),
+            primary: true,
+          ),
+        if (can('trabajos.crear'))
+          button('Recibir trabajo', Icons.assignment_add, () => createWork()),
       ],
     ),
     if (quotes.isEmpty && works.isEmpty)
@@ -678,9 +713,9 @@ class _ManagementState extends State<ManagementPage> {
               Icons.edit_outlined,
               () => createQuote(q),
             ),
-          if (quoteTransitions(q).isNotEmpty)
+          if (can('cotizaciones.editar') && quoteTransitions(q).isNotEmpty)
             button('Cambiar estado', Icons.edit_note, () => quoteStatus(q)),
-          if (q.status == QuoteStatus.accepted)
+          if (q.status == QuoteStatus.accepted && can('cotizaciones.convertir'))
             button(
               'Convertir en venta',
               Icons.point_of_sale,
@@ -699,12 +734,13 @@ class _ManagementState extends State<ManagementPage> {
         title: '${w.number} · ${w.customerName}',
         subtitle: '${w.status.label} · Entrega ${localDate(w.deliveryAt)}',
         actions: [
-          button(
-            'Actualizar trabajo',
-            Icons.edit_outlined,
-            () => workStatus(w),
-          ),
-          if (canReceiveAdvance(w))
+          if (can('trabajos.editar'))
+            button(
+              'Actualizar trabajo',
+              Icons.edit_outlined,
+              () => workStatus(w),
+            ),
+          if (canReceiveAdvance(w) && can('trabajos.cobrar'))
             button(
               'Registrar anticipo',
               Icons.payments_outlined,
@@ -715,7 +751,8 @@ class _ManagementState extends State<ManagementPage> {
             Icons.history,
             () => advanceHistory(w),
           ),
-          if (w.unappliedAdvances > 0 &&
+          if (can('trabajos.cobrar') &&
+              w.unappliedAdvances > 0 &&
               (w.quoteId == null || workQuote(w)?.saleId != null))
             button('Aplicar a una venta', Icons.link, () => applyAdvance(w)),
         ],
@@ -742,7 +779,7 @@ class _ManagementState extends State<ManagementPage> {
       context,
       products,
       purchase: false,
-      allowPriceChanges: manager,
+      allowPriceChanges: can('precios.editar'),
       initialLines: [
         for (final line in quote?.lines ?? <QuoteLine>[])
           DraftLine(
@@ -1106,6 +1143,19 @@ class _ManagementState extends State<ManagementPage> {
   }
 
   List<Widget> userPage() => [
+    if (widget.onOpenCentralAccess != null && repo.hasPermission('access:read'))
+      DataCard(
+        title: 'Usuarios y roles centrales',
+        subtitle:
+            'Administra cuentas, roles configurables y permisos del negocio en el servidor central.',
+        actions: [
+          OutlinedButton.icon(
+            onPressed: busy ? null : widget.onOpenCentralAccess,
+            icon: const Icon(Icons.admin_panel_settings_outlined),
+            label: const Text('Abrir control de acceso'),
+          ),
+        ],
+      ),
     if (owner)
       DataCard(
         title: 'Usuarios locales',
@@ -1129,34 +1179,35 @@ class _ManagementState extends State<ManagementPage> {
           button('Editar usuario', Icons.edit_outlined, () => userForm(u)),
         ],
       ),
-    DataCard(
-      title: 'Auditoría',
-      subtitle:
-          'Operaciones registradas automáticamente con usuario y fecha. Se muestran las primeras 200 coincidencias; el PDF incluye todo el historial.',
-      actions: [
-        button(
-          'Guardar / imprimir auditoría',
-          Icons.description_outlined,
-          () => showCapcDocument(
-            context,
-            title: 'Auditoría',
-            build: () => CapcDocuments.buildTableDocument(
-              title: 'Auditoría local',
-              headers: ['Fecha Bogotá', 'Acción', 'Responsable', 'Detalle'],
-              rows: [
-                for (final a in audits)
-                  [
-                    localDate(a.createdAt),
-                    operationLabel(a.action),
-                    a.actorName,
-                    auditDescription(a.details),
-                  ],
-              ],
+    if (repo.hasPermission('auditoria.ver'))
+      DataCard(
+        title: 'Auditoría',
+        subtitle:
+            'Operaciones registradas automáticamente con usuario y fecha. Se muestran las primeras 200 coincidencias; el PDF incluye todo el historial.',
+        actions: [
+          button(
+            'Guardar / imprimir auditoría',
+            Icons.description_outlined,
+            () => showCapcDocument(
+              context,
+              title: 'Auditoría',
+              build: () => CapcDocuments.buildTableDocument(
+                title: 'Auditoría local',
+                headers: ['Fecha Bogotá', 'Acción', 'Responsable', 'Detalle'],
+                rows: [
+                  for (final a in audits)
+                    [
+                      localDate(a.createdAt),
+                      operationLabel(a.action),
+                      a.actorName,
+                      auditDescription(a.details),
+                    ],
+                ],
+              ),
             ),
           ),
-        ),
-      ],
-    ),
+        ],
+      ),
     for (final a
         in audits
             .where((a) => matches('${a.action} ${a.actorName} ${a.details}'))
@@ -1165,6 +1216,45 @@ class _ManagementState extends State<ManagementPage> {
         title: operationLabel(a.action),
         subtitle: '${localDate(a.createdAt)} · ${a.actorName}',
         children: [SelectableText(auditDescription(a.details))],
+      ),
+    if (remoteAudits.isNotEmpty)
+      DataCard(
+        title: 'Auditoría central',
+        subtitle:
+            'Actividad de acceso y administración registrada por el servidor.',
+      ),
+    for (final a in remoteAudits.where(
+      (a) => matches('${a.event} ${a.actorName} ${a.details}'),
+    ))
+      DataCard(
+        title: operationLabel(a.event),
+        subtitle:
+            '${localDate(a.createdAt)} · ${a.actorName}${a.deviceName == null ? '' : ' · ${a.deviceName}'}',
+        children: [SelectableText(auditDescription(jsonEncode(a.details)))],
+      ),
+    if (repo.hasPermission('conflictos.ver'))
+      DataCard(
+        title: 'Conflictos de sincronización',
+        subtitle: conflicts.isEmpty
+            ? 'No hay conflictos pendientes.'
+            : '${conflicts.length} conflicto(s) requieren revisión. Marcar como revisado conserva el historial y no reemplaza datos automáticamente.',
+      ),
+    for (final conflict in conflicts)
+      DataCard(
+        title: operationLabel(conflict.kind),
+        subtitle:
+            '${localDate(conflict.createdAt)} · registro ${conflict.entityId}',
+        actions: [
+          if (repo.hasPermission('conflictos.resolver'))
+            button(
+              'Marcar como revisado',
+              Icons.task_alt_outlined,
+              () => repo.markSyncConflictReviewed(conflict.id),
+            ),
+        ],
+        children: [
+          SelectableText(auditDescription(jsonEncode(conflict.details))),
+        ],
       ),
   ];
   String roleText(UserRole r) => switch (r) {

@@ -150,7 +150,7 @@ describePostgres('PostgreSQL identity and sync integration', () => {
       'remote_owners', 'devices', 'sessions', 'refresh_tokens',
       'linking_codes', 'token_revocations', 'security_audit', 'sync_operations',
       'sync_entities', 'sync_financial_events', 'sync_inventory_movements',
-      'sync_conflicts',
+      'sync_conflicts', 'business_assets', 'access_roles', 'business_users',
     ]) {
       const result = await pool!.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM ${table} WHERE business_id=$1`,
@@ -164,6 +164,117 @@ describePostgres('PostgreSQL identity and sync integration', () => {
       headers: headers(identity),
     });
     expect(rejected.statusCode).toBe(401);
+  });
+
+  it('persists tenant-scoped roles and hashes one-time activation codes', async () => {
+    const app = setup();
+    const identity = await createBusiness(app);
+    const roleResponse = await app.inject({
+      method: 'POST', url: '/api/v1/access/roles', headers: headers(identity),
+      payload: {
+        name: 'Auxiliar de caja',
+        role_type: 'operational',
+        permissions: ['ventas.ver', 'ventas.crear', 'auditoria.ver'],
+      },
+    });
+    expect(roleResponse.statusCode).toBe(201);
+    const role = roleResponse.json<{ role: { id: string } }>().role;
+    const userResponse = await app.inject({
+      method: 'POST', url: '/api/v1/access/users', headers: headers(identity),
+      payload: {
+        name: 'Carlos', username: 'carlos', email: 'carlos@example.test', role_ids: [role.id],
+      },
+    });
+    expect(userResponse.statusCode).toBe(201);
+    const created = userResponse.json<{
+      user: { id: string; activated: boolean };
+      activation_code: string;
+    }>();
+    expect(created.user.activated).toBe(false);
+    const stored = await pool!.query<{ hash: Buffer; roles: string }>(
+      `SELECT u.activation_code_hash AS hash,count(ur.role_id)::text AS roles
+       FROM business_users u LEFT JOIN business_user_roles ur ON ur.user_id=u.id
+       WHERE u.id=$1 GROUP BY u.id`,
+      [created.user.id],
+    );
+    expect(stored.rows[0]!.hash).toHaveLength(32);
+    expect(stored.rows[0]!.hash.toString('utf8')).not.toContain(created.activation_code);
+    expect(Number(stored.rows[0]!.roles)).toBe(1);
+    const activated = await app.inject({
+      method: 'POST', url: '/api/v1/access/activate',
+      payload: {
+        business_id: identity.business_id, username: 'carlos',
+        activation_code: created.activation_code, password: 'central-password-2026',
+      },
+    });
+    expect(activated.statusCode).toBe(204);
+    const login = await app.inject({
+      method: 'POST', url: '/api/v1/access/login',
+      payload: {
+        business_id: identity.business_id, username: 'carlos',
+        password: 'central-password-2026', device_id: identity.device_id,
+      },
+    });
+    expect(login.statusCode).toBe(200);
+    expect(login.json().permissions).toEqual(expect.arrayContaining([
+      'sync:read', 'sync:write', 'ventas.ver', 'ventas.crear', 'auditoria.ver',
+    ]));
+    const userIdentity = login.json<{
+      access_token: string;
+      business_id: string;
+      device_id: string;
+    }>();
+    const operationId = randomUUID();
+    const pushed = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sync/push',
+      headers: headers(userIdentity),
+      payload: {
+        operations: [{
+          business_id: identity.business_id,
+          device_id: identity.device_id,
+          operation_id: operationId,
+          type: 'customer.saved',
+          schema_version: 1,
+          occurred_at: '2026-09-28T12:00:00.000Z',
+          content: {
+            id: randomUUID(),
+            name: 'Cliente auditado',
+            revision: 1,
+            _audit: {
+              actor_id: created.user.id,
+              actor_name: 'Carlos',
+              username: 'carlos',
+              central: true,
+              role_type: 'operational',
+            },
+          },
+        }],
+      },
+    });
+    expect(pushed.statusCode).toBe(200);
+    const audit = await app.inject({
+      method: 'GET',
+      url: '/api/v1/access/audit?limit=50',
+      headers: headers(userIdentity),
+    });
+    expect(audit.statusCode).toBe(200);
+    expect(audit.json().audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: 'access.session_login', actorName: 'Carlos' }),
+      expect.objectContaining({
+        event: 'customer.saved',
+        actorName: 'Carlos',
+        userId: created.user.id,
+      }),
+    ]));
+    const protectedValues = await pool!.query<{
+      activation_code_hash: Buffer | null; password_hash: Buffer;
+    }>(
+      `SELECT activation_code_hash,password_hash FROM business_users WHERE id=$1`,
+      [created.user.id],
+    );
+    expect(protectedValues.rows[0]!.activation_code_hash).toBeNull();
+    expect(protectedValues.rows[0]!.password_hash).toHaveLength(64);
   });
 
   it('links once, rejects expired/reused codes and a device from another business', async () => {

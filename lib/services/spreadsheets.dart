@@ -29,6 +29,12 @@ class ProductImportPreview {
 }
 
 class CapcSpreadsheets {
+  static String _business = 'CAPC MULTISERVICIO';
+  static void configureBusiness(String name) {
+    final value = name.trim();
+    _business = value.isEmpty ? 'CAPC MULTISERVICIO' : value;
+  }
+
   static const maxImportRows = 5000;
   static const maxImportBytes = 10 * 1024 * 1024;
   static const _maxExpandedBytes = 40 * 1024 * 1024;
@@ -835,7 +841,7 @@ class CapcSpreadsheets {
     final sheet = book[name];
     _writeTable(
       sheet,
-      ['CAPC MULTISERVICIO · $name'],
+      ['$_business · $name'],
       [
         for (final note in notes) [note],
       ],

@@ -42,6 +42,133 @@ class LinkingCode {
   final DateTime expiresAt;
 }
 
+class RemotePermission {
+  const RemotePermission({
+    required this.key,
+    required this.module,
+    required this.action,
+    required this.description,
+  });
+  final String key, module, action, description;
+  factory RemotePermission.fromJson(Map<String, Object?> json) =>
+      RemotePermission(
+        key: json['key'] as String,
+        module: json['module'] as String,
+        action: json['action'] as String,
+        description: json['description'] as String,
+      );
+}
+
+class RemoteAccessRole {
+  const RemoteAccessRole({
+    required this.id,
+    required this.name,
+    required this.roleType,
+    required this.permissions,
+    required this.system,
+    required this.version,
+  });
+  final String id, name;
+  final String roleType;
+  final List<String> permissions;
+  final bool system;
+  final int version;
+  factory RemoteAccessRole.fromJson(Map<String, Object?> json) =>
+      RemoteAccessRole(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        roleType: json['roleType'] as String,
+        permissions: (json['permissions'] as List).cast<String>(),
+        system: json['system'] as bool,
+        version: json['version'] as int,
+      );
+}
+
+class RemoteAccessRoleRef {
+  const RemoteAccessRoleRef(this.id, this.name);
+  final String id, name;
+  factory RemoteAccessRoleRef.fromJson(Map<String, Object?> json) =>
+      RemoteAccessRoleRef(json['id'] as String, json['name'] as String);
+}
+
+class RemoteAccessUser {
+  const RemoteAccessUser({
+    required this.id,
+    required this.name,
+    required this.username,
+    required this.active,
+    required this.activated,
+    required this.roles,
+    required this.securityVersion,
+    this.email,
+  });
+  final String id, name, username;
+  final String? email;
+  final bool active, activated;
+  final List<RemoteAccessRoleRef> roles;
+  final int securityVersion;
+  factory RemoteAccessUser.fromJson(Map<String, Object?> json) =>
+      RemoteAccessUser(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        username: json['username'] as String,
+        email: json['email'] as String?,
+        active: json['active'] as bool,
+        activated: json['activated'] as bool,
+        roles: (json['roles'] as List)
+            .map(
+              (item) => RemoteAccessRoleRef.fromJson(
+                Map<String, Object?>.from(item as Map),
+              ),
+            )
+            .toList(growable: false),
+        securityVersion: json['securityVersion'] as int,
+      );
+}
+
+class CreatedRemoteAccessUser {
+  const CreatedRemoteAccessUser(
+    this.user,
+    this.activationCode,
+    this.activationExpiresAt,
+  );
+  final RemoteAccessUser user;
+  final String activationCode;
+  final DateTime activationExpiresAt;
+}
+
+class RemoteSecurityAudit {
+  const RemoteSecurityAudit({
+    required this.id,
+    required this.event,
+    required this.actorName,
+    required this.details,
+    required this.createdAt,
+    this.deviceId,
+    this.deviceName,
+    this.ownerId,
+    this.userId,
+  });
+
+  final String id, event, actorName;
+  final String? deviceId, deviceName, ownerId, userId;
+  final Map<String, Object?> details;
+  final DateTime createdAt;
+
+  factory RemoteSecurityAudit.fromJson(Map<String, Object?> json) =>
+      RemoteSecurityAudit(
+        id: json['id'] as String,
+        event: json['event'] as String,
+        actorName: json['actorName'] as String,
+        deviceId: json['deviceId'] as String?,
+        deviceName: json['deviceName'] as String?,
+        ownerId: json['ownerId'] as String?,
+        userId: json['userId'] as String?,
+        details: Map<String, Object?>.from(json['details'] as Map),
+        createdAt: DateTime.parse(json['createdAt'] as String).toUtc(),
+      );
+}
+
 class RemoteIdentityController {
   RemoteIdentityController({
     required this.repository,
@@ -74,6 +201,16 @@ class RemoteIdentityController {
       (configuration.baseUri ?? recommendedProductionUri).resolve(
         '/eliminar-cuenta',
       );
+
+  Future<OfflineAuthorization?> offlineAuthorization() async {
+    final current = _session ?? await credentials.read();
+    if (current == null ||
+        current.businessId != repository.businessId ||
+        current.deviceId != repository.deviceId) {
+      return null;
+    }
+    return current.verifyOfflineAuthorization();
+  }
 
   Future<void> initialize() async {
     if (!enabled) return;
@@ -113,7 +250,15 @@ class RemoteIdentityController {
       'refresh_token': current.refreshToken,
       'device_id': repository.deviceId,
     });
-    return (await _saveSession(refreshed)).accessToken;
+    final saved = await _saveSession(refreshed);
+    if (repository.currentUser?.central == true &&
+        repository.currentUser?.id == saved.userId) {
+      final authorization = await saved.verifyOfflineAuthorization();
+      if (authorization != null) {
+        await repository.refreshCentralAuthorization(authorization);
+      }
+    }
+    return saved.accessToken;
   }
 
   Future<void> connectBusiness({
@@ -146,6 +291,58 @@ class RemoteIdentityController {
       'device_id': repository.deviceId,
     });
     await _saveSession(response);
+  }
+
+  Future<void> activateAccessUser({
+    required String username,
+    required String activationCode,
+    required String password,
+  }) async {
+    _requireEnabled();
+    await _post('/api/v1/access/activate', {
+      'business_id': repository.businessId,
+      'username': username.trim(),
+      'activation_code': activationCode.trim(),
+      'password': password,
+    });
+  }
+
+  Future<void> loginAccessUser({
+    required String username,
+    required String password,
+    bool authenticateLocally = false,
+  }) async {
+    _requireEnabled();
+    _requireNoIdentityConflict();
+    final response = await _post('/api/v1/access/login', {
+      'business_id': repository.businessId,
+      'username': username.trim(),
+      'password': password,
+      'device_id': repository.deviceId,
+    });
+    final session = await _saveSession(response);
+    if (authenticateLocally) {
+      final authorization = await session.verifyOfflineAuthorization();
+      if (authorization == null) {
+        throw const RemoteIdentityException(
+          'El servidor no entregó una autorización offline válida.',
+        );
+      }
+      await repository.cacheCentralLogin(authorization, password);
+    }
+  }
+
+  Future<void> loginAccessUserOffline({
+    required String username,
+    required String password,
+  }) async {
+    final authorization = await offlineAuthorization();
+    if (authorization == null) {
+      throw const RemoteIdentityException(
+        'Conéctate a internet para renovar la autorización de este usuario.',
+      );
+    }
+    await repository.loginCentralOffline(username, password, authorization);
   }
 
   Future<void> linkDevice(String code) async {
@@ -208,6 +405,126 @@ class RemoteIdentityController {
     }
   }
 
+  Future<List<RemotePermission>> listAccessPermissions() async {
+    final response = await _authorized('GET', '/api/v1/access/permissions');
+    return (response['permissions'] as List)
+        .map(
+          (item) =>
+              RemotePermission.fromJson(Map<String, Object?>.from(item as Map)),
+        )
+        .toList(growable: false);
+  }
+
+  Future<List<RemoteAccessRole>> listAccessRoles() async {
+    final response = await _authorized('GET', '/api/v1/access/roles');
+    return (response['roles'] as List)
+        .map(
+          (item) =>
+              RemoteAccessRole.fromJson(Map<String, Object?>.from(item as Map)),
+        )
+        .toList(growable: false);
+  }
+
+  Future<RemoteAccessRole> saveAccessRole({
+    String? id,
+    required String name,
+    required String roleType,
+    required List<String> permissions,
+    int? expectedVersion,
+  }) async {
+    final response = await _authorized(
+      id == null ? 'POST' : 'PATCH',
+      id == null ? '/api/v1/access/roles' : '/api/v1/access/roles/$id',
+      body: {
+        'name': name.trim(),
+        'role_type': roleType,
+        'permissions': permissions,
+        'expected_version': ?expectedVersion,
+      },
+    );
+    return RemoteAccessRole.fromJson(
+      Map<String, Object?>.from(response['role'] as Map),
+    );
+  }
+
+  Future<List<RemoteAccessUser>> listAccessUsers() async {
+    final response = await _authorized('GET', '/api/v1/access/users');
+    return (response['users'] as List)
+        .map(
+          (item) =>
+              RemoteAccessUser.fromJson(Map<String, Object?>.from(item as Map)),
+        )
+        .toList(growable: false);
+  }
+
+  Future<CreatedRemoteAccessUser> createAccessUser({
+    required String name,
+    required String username,
+    String? email,
+    required List<String> roleIds,
+  }) async {
+    final response = await _authorized(
+      'POST',
+      '/api/v1/access/users',
+      body: {
+        'name': name.trim(),
+        'username': username.trim(),
+        if (email != null && email.trim().isNotEmpty) 'email': email.trim(),
+        'role_ids': roleIds,
+      },
+    );
+    return CreatedRemoteAccessUser(
+      RemoteAccessUser.fromJson(
+        Map<String, Object?>.from(response['user'] as Map),
+      ),
+      response['activation_code'] as String,
+      DateTime.parse(response['activation_expires_at'] as String).toUtc(),
+    );
+  }
+
+  Future<RemoteAccessUser> updateAccessUser({
+    required String id,
+    required String name,
+    required String username,
+    String? email,
+    required bool active,
+    required List<String> roleIds,
+  }) async {
+    final response = await _authorized(
+      'PATCH',
+      '/api/v1/access/users/$id',
+      body: {
+        'name': name.trim(),
+        'username': username.trim(),
+        if (email != null && email.trim().isNotEmpty) 'email': email.trim(),
+        'active': active,
+        'role_ids': roleIds,
+      },
+    );
+    return RemoteAccessUser.fromJson(
+      Map<String, Object?>.from(response['user'] as Map),
+    );
+  }
+
+  Future<List<RemoteSecurityAudit>> listSecurityAudit({int limit = 200}) async {
+    if (limit < 1 || limit > 500) {
+      throw const RemoteIdentityException(
+        'El límite de auditoría no es válido.',
+      );
+    }
+    final response = await _authorized(
+      'GET',
+      '/api/v1/access/audit?limit=$limit',
+    );
+    return (response['audit'] as List)
+        .map(
+          (item) => RemoteSecurityAudit.fromJson(
+            Map<String, Object?>.from(item as Map),
+          ),
+        )
+        .toList(growable: false);
+  }
+
   Future<void> logout() async {
     final current = _session ?? await credentials.read();
     try {
@@ -264,14 +581,18 @@ class RemoteIdentityController {
   Future<Map<String, Object?>> _post(String path, Map<String, Object?> body) =>
       _request('POST', path, body: body);
 
-  Future<Map<String, Object?>> _authorized(String method, String path) async {
+  Future<Map<String, Object?>> _authorized(
+    String method,
+    String path, {
+    Map<String, Object?>? body,
+  }) async {
     final token = await accessToken();
     if (token == null) {
       throw const RemoteIdentityException(
         'Inicia sesión remota para continuar.',
       );
     }
-    return _request(method, path, token: token);
+    return _request(method, path, token: token, body: body);
   }
 
   Future<Map<String, Object?>> _request(
@@ -285,7 +606,8 @@ class RemoteIdentityController {
       method,
       configuration.baseUri!.resolve(path),
     );
-    request.headers.contentType = ContentType.json;
+    // Fastify rejects an empty body advertised as JSON (link codes/logout).
+    if (body != null) request.headers.contentType = ContentType.json;
     request.headers.set(HttpHeaders.acceptHeader, ContentType.json.mimeType);
     if (token != null) {
       request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
@@ -341,6 +663,24 @@ class RemoteIdentityController {
     'business_id_required' =>
       'Este correo administra más de un negocio. Verifica el identificador del negocio.',
     'business_unavailable' => 'La cuenta remota ya no está disponible.',
+    'unknown_permission' =>
+      'El rol contiene un permiso que el servidor no reconoce.',
+    'role_name_exists' => 'Ya existe un rol con ese nombre.',
+    'role_not_found' => 'El rol no existe o pertenece a otro negocio.',
+    'system_role_immutable' =>
+      'El rol del administrador principal está protegido.',
+    'role_version_conflict' =>
+      'El rol cambió en otro dispositivo. Actualiza e intenta de nuevo.',
+    'user_identity_exists' => 'El usuario o correo ya está registrado.',
+    'user_not_found' => 'El usuario no existe o pertenece a otro negocio.',
+    'cannot_deactivate_current_owner' =>
+      'No puedes desactivar al administrador principal actual.',
+    'owner_role_required' =>
+      'El administrador principal debe conservar su rol protegido.',
+    'activation_invalid_or_expired' =>
+      'El código de activación no es válido, ya fue usado o venció.',
+    'remote_owner_required' =>
+      'Esta acción requiere la cuenta del administrador principal.',
     _ => 'No se pudo completar la operación remota.',
   };
 }

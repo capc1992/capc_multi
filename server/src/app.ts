@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyServerOptions } from 'fastify';
 import { z, ZodError } from 'zod';
 
-import { IdentityError, requirePermission, type AuthIdentity, type IdentityStore, type IssuedIdentity } from './identity.js';
+import { IdentityError, requireAnyPermission, requirePermission, type AuthIdentity, type IdentityStore, type IssuedIdentity } from './identity.js';
 import { accountDeletionPage, privacyPage } from './public_pages.js';
 import { PullQuerySchema, PushSchema } from './protocol.js';
 import { BusinessUnavailableError, IdempotencyConflictError, type SyncStore } from './store.js';
@@ -43,12 +43,51 @@ const LinkSchema = DeviceSchema.extend({
   local_state: z.enum(['new', 'no_movements']),
 }).strict();
 const DeviceParamsSchema = z.object({ deviceId: z.string().uuid() });
+const RoleParamsSchema = z.object({ roleId: z.string().uuid() });
+const UserParamsSchema = z.object({ userId: z.string().uuid() });
+const AuditQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(200),
+}).strict();
+const PermissionKeySchema = z.string().trim().min(3).max(120);
+const SaveRoleSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  role_type: z.enum(['administrator', 'operational']),
+  permissions: z.array(PermissionKeySchema).min(1).max(100),
+  expected_version: z.number().int().positive().optional(),
+}).strict().superRefine((value, context) => {
+  if (new Set(value.permissions).size !== value.permissions.length) {
+    context.addIssue({ code: 'custom', message: 'duplicate_permissions', path: ['permissions'] });
+  }
+});
+const CreateAccessUserSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  username: z.string().trim().min(3).max(80),
+  email: z.email().max(320).optional(),
+  role_ids: z.array(z.string().uuid()).min(1).max(20),
+}).strict();
+const UpdateAccessUserSchema = CreateAccessUserSchema.extend({
+  active: z.boolean(),
+}).strict();
+const ActivateAccessUserSchema = z.object({
+  business_id: z.string().uuid(),
+  username: z.string().trim().min(3).max(80),
+  activation_code: z.string().min(32).max(256),
+  password: z.string().min(12).max(200),
+}).strict();
+const AccessUserLoginSchema = z.object({
+  business_id: z.string().uuid(),
+  username: z.string().trim().min(3).max(80),
+  password: z.string().min(1).max(200),
+  device_id: z.string().uuid(),
+}).strict();
 const publicIdentityRoutes = new Set([
   '/api/v1/identity/businesses',
   '/api/v1/identity/login',
   '/api/v1/identity/refresh',
   '/api/v1/identity/link',
   '/api/v1/identity/delete-account',
+  '/api/v1/access/activate',
+  '/api/v1/access/login',
 ]);
 
 export function buildApp(options: BuildAppOptions): FastifyInstance {
@@ -137,6 +176,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   app.post('/api/v1/identity/link-codes', async (request, reply) => {
     const identity = authenticated(identities, request);
     requirePermission(identity, 'devices:manage');
+    requireRemoteOwner(identity);
     enforceScope(request, identity);
     return reply.code(201).send(await options.identityStore.createLinkCode(identity));
   });
@@ -162,6 +202,135 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     enforceScope(request, identity);
     await options.identityStore.logout(identity);
     return reply.code(204).send();
+  });
+
+  app.post('/api/v1/access/activate', async (request, reply) => {
+    const body = ActivateAccessUserSchema.parse(request.body);
+    await options.identityStore.activateAccessUser({
+      businessId: body.business_id,
+      username: body.username,
+      activationCode: body.activation_code,
+      password: body.password,
+    }, requestKey(request));
+    return reply.code(204).send();
+  });
+
+  app.post('/api/v1/access/login', async (request) => {
+    const body = AccessUserLoginSchema.parse(request.body);
+    return tokenResponse(await options.identityStore.loginAccessUser({
+      businessId: body.business_id,
+      username: body.username,
+      password: body.password,
+      deviceId: body.device_id,
+    }, requestKey(request)));
+  });
+
+  app.get('/api/v1/access/permissions', async (request) => {
+    const identity = authenticated(identities, request);
+    requireAnyPermission(identity, ['access:read', 'roles.ver', 'roles.crear', 'roles.editar']);
+    enforceScope(request, identity);
+    return { permissions: await options.identityStore.listAccessPermissions(identity) };
+  });
+
+  app.get('/api/v1/access/roles', async (request) => {
+    const identity = authenticated(identities, request);
+    requireAnyPermission(identity, [
+      'access:read',
+      'roles.ver',
+      'roles.crear',
+      'roles.editar',
+    ]);
+    enforceScope(request, identity);
+    return { roles: await options.identityStore.listAccessRoles(identity) };
+  });
+
+  app.post('/api/v1/access/roles', async (request, reply) => {
+    const identity = authenticated(identities, request);
+    requireAnyPermission(identity, ['access:manage', 'roles.crear']);
+    enforceScope(request, identity);
+    const body = SaveRoleSchema.parse(request.body);
+    const role = await options.identityStore.saveAccessRole(identity, {
+      name: body.name,
+      roleType: body.role_type,
+      permissions: body.permissions,
+    });
+    return reply.code(201).send({ role });
+  });
+
+  app.patch('/api/v1/access/roles/:roleId', async (request) => {
+    const identity = authenticated(identities, request);
+    requireAnyPermission(identity, ['access:manage', 'roles.editar']);
+    enforceScope(request, identity);
+    const { roleId } = RoleParamsSchema.parse(request.params);
+    const body = SaveRoleSchema.parse(request.body);
+    return {
+      role: await options.identityStore.saveAccessRole(identity, {
+        id: roleId,
+        name: body.name,
+        roleType: body.role_type,
+        permissions: body.permissions,
+        ...(body.expected_version === undefined ? {} : { expectedVersion: body.expected_version }),
+      }),
+    };
+  });
+
+  app.get('/api/v1/access/users', async (request) => {
+    const identity = authenticated(identities, request);
+    requireAnyPermission(identity, [
+      'access:read',
+      'usuarios.ver',
+      'usuarios.crear',
+      'usuarios.editar',
+      'usuarios.eliminar',
+    ]);
+    enforceScope(request, identity);
+    return { users: await options.identityStore.listAccessUsers(identity) };
+  });
+
+  app.post('/api/v1/access/users', async (request, reply) => {
+    const identity = authenticated(identities, request);
+    requireAnyPermission(identity, ['access:manage', 'usuarios.crear']);
+    enforceScope(request, identity);
+    const body = CreateAccessUserSchema.parse(request.body);
+    const created = await options.identityStore.createAccessUser(identity, {
+      name: body.name,
+      username: body.username,
+      ...(body.email === undefined ? {} : { email: body.email }),
+      roleIds: body.role_ids,
+    });
+    return reply.code(201).send({
+      user: created.user,
+      activation_code: created.activationCode,
+      activation_expires_at: created.activationExpiresAt,
+    });
+  });
+
+  app.patch('/api/v1/access/users/:userId', async (request) => {
+    const identity = authenticated(identities, request);
+    enforceScope(request, identity);
+    const { userId } = UserParamsSchema.parse(request.params);
+    const body = UpdateAccessUserSchema.parse(request.body);
+    requireAnyPermission(identity, [
+      'access:manage',
+      body.active ? 'usuarios.editar' : 'usuarios.eliminar',
+    ]);
+    return {
+      user: await options.identityStore.updateAccessUser(identity, userId, {
+        name: body.name,
+        username: body.username,
+        ...(body.email === undefined ? {} : { email: body.email }),
+        active: body.active,
+        roleIds: body.role_ids,
+      }),
+    };
+  });
+
+  app.get('/api/v1/access/audit', async (request) => {
+    const identity = authenticated(identities, request);
+    requireAnyPermission(identity, ['access:read', 'auditoria.ver']);
+    enforceScope(request, identity);
+    const query = AuditQuerySchema.parse(request.query);
+    return { audit: await options.identityStore.listSecurityAudit(identity, query.limit) };
   });
 
   app.post('/api/v1/sync/push', async (request, reply) => {
@@ -212,6 +381,10 @@ function authenticated(identities: WeakMap<FastifyRequest, AuthIdentity>, reques
   return identity;
 }
 
+function requireRemoteOwner(identity: AuthIdentity): void {
+  if (!identity.ownerId) throw new IdentityError('remote_owner_required', 403);
+}
+
 function enforceScope(request: FastifyRequest, identity: AuthIdentity): void {
   if (request.headers['x-business-id'] !== identity.businessId) throw new IdentityError('business_scope_mismatch', 403);
 }
@@ -225,10 +398,17 @@ function tokenResponse(value: IssuedIdentity): Record<string, unknown> {
     business_id: value.businessId,
     device_id: value.deviceId,
     permissions: value.permissions,
+    principal_name: value.principalName,
+    username: value.username,
+    role_type: value.roleType,
+    user_id: value.userId,
     access_token: value.accessToken,
     refresh_token: value.refreshToken,
     access_expires_at: value.accessExpiresAt,
     refresh_expires_at: value.refreshExpiresAt,
+    offline_grant: value.offlineGrant,
+    offline_grant_public_key: value.offlineGrantPublicKey,
+    offline_grant_expires_at: value.offlineGrantExpiresAt,
   };
 }
 

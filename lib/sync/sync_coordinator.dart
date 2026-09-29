@@ -63,7 +63,7 @@ class SyncCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     _running = true;
     if (!_disposed) notifyListeners();
     try {
-      final result = await _engine.runOnce();
+      final result = await _engine.runOnce(forceRetry: !silent);
       await refreshStatus();
       return result;
     } catch (_) {

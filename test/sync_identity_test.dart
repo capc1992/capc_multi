@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:capc_multiservicio/data/repository.dart';
@@ -8,6 +9,7 @@ import 'package:capc_multiservicio/sync/sync_engine.dart';
 import 'package:capc_multiservicio/sync/sync_models.dart';
 import 'package:capc_multiservicio/sync/sync_transport.dart';
 import 'package:capc_multiservicio/ui/remote_identity_page.dart';
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
@@ -35,6 +37,18 @@ class _DeletionController extends RemoteIdentityController {
 
   final RemoteSession _session;
   bool deleted = false;
+  bool failLinkCode = false;
+
+  @override
+  Future<LinkingCode> createLinkCode() async {
+    if (failLinkCode) {
+      throw const RemoteIdentityException('No se pudo generar el código.');
+    }
+    return LinkingCode(
+      'ABCD234567',
+      DateTime.now().add(const Duration(minutes: 10)),
+    );
+  }
 
   @override
   bool get enabled => true;
@@ -62,6 +76,9 @@ class _DeletionController extends RemoteIdentityController {
   }
 }
 
+// Bypass the widget binding's HTTP stub for the loopback transport regression.
+class _RealHttpOverrides extends HttpOverrides {}
+
 class _FakeSyncEngine extends SyncEngine {
   _FakeSyncEngine({required this.testRepository, required super.configuration})
     : super(repository: testRepository);
@@ -70,7 +87,10 @@ class _FakeSyncEngine extends SyncEngine {
   int calls = 0;
 
   @override
-  Future<SyncRunResult> runOnce({int batchSize = 100}) async {
+  Future<SyncRunResult> runOnce({
+    int batchSize = 100,
+    bool forceRetry = true,
+  }) async {
     calls++;
     await testRepository.setSyncStatus(SyncStatus.synced, successful: true);
     return const SyncRunResult(
@@ -134,6 +154,135 @@ void main() {
       db.close();
     }
   });
+
+  test(
+    'concesión offline firmada limita dispositivo, permisos y 72 horas',
+    () async {
+      final algorithm = Ed25519();
+      final keyPair = await algorithm.newKeyPair();
+      final publicKey = await keyPair.extractPublicKey();
+      final issued = DateTime.now().toUtc();
+      final payload = base64UrlEncode(
+        utf8.encode(
+          jsonEncode({
+            'business_id': repository.businessId,
+            'device_id': repository.deviceId,
+            'principal_id': 'central-user',
+            'principal_name': 'Caja central',
+            'username': 'caja.central',
+            'role_type': 'operational',
+            'permissions': ['ventas.ver', 'ventas.crear'],
+            'security_version': 3,
+            'issued_at': issued.toIso8601String(),
+            'expires_at': issued
+                .add(const Duration(hours: 72))
+                .toIso8601String(),
+          }),
+        ),
+      );
+      final signature = await algorithm.sign(
+        utf8.encode(payload),
+        keyPair: keyPair,
+      );
+      final session = RemoteSession(
+        businessId: repository.businessId,
+        deviceId: repository.deviceId,
+        userId: 'central-user',
+        accessToken: 'access',
+        refreshToken: 'refresh',
+        accessExpiresAt: issued.add(const Duration(minutes: 15)),
+        refreshExpiresAt: issued.add(const Duration(days: 30)),
+        permissions: const ['ventas.ver', 'ventas.crear'],
+        offlineGrant: '$payload.${base64UrlEncode(signature.bytes)}',
+        offlineGrantPublicKey: base64UrlEncode(publicKey.bytes),
+        offlineGrantExpiresAt: issued.add(const Duration(hours: 72)),
+      );
+      final authorization = await session.verifyOfflineAuthorization(
+        now: issued,
+      );
+      expect(authorization!.can('ventas.crear'), isTrue);
+      expect(authorization.can('productos.eliminar'), isFalse);
+      expect(authorization.securityVersion, 3);
+      expect(
+        await session.verifyOfflineAuthorization(
+          now: issued.add(const Duration(hours: 72, seconds: 1)),
+        ),
+        isNull,
+      );
+      final tampered = RemoteSession.fromJson({
+        ...session.toJson(),
+        'offline_grant': '${payload}x.${base64UrlEncode(signature.bytes)}',
+      });
+      expect(await tampered.verifyOfflineAuthorization(now: issued), isNull);
+    },
+  );
+
+  test(
+    'usuario central conserva acceso offline y aplica permisos exactos',
+    () async {
+      final issued = DateTime.now().toUtc();
+      final authorization = OfflineAuthorization(
+        businessId: repository.businessId,
+        deviceId: repository.deviceId,
+        userId: 'central-user',
+        principalName: 'Consulta de productos',
+        username: 'consulta.productos',
+        roleType: 'administrator',
+        permissions: const ['productos.ver'],
+        securityVersion: 4,
+        issuedAt: issued,
+        expiresAt: issued.add(const Duration(hours: 24)),
+      );
+      await repository.cacheCentralLogin(
+        authorization,
+        'clave-central-segura-2026',
+      );
+      expect(repository.currentUser!.central, isTrue);
+      expect(repository.currentUser!.roleLabel, 'Administrador configurable');
+      expect(await repository.listProducts(), isEmpty);
+      await expectLater(
+        repository.saveProduct(
+          const Product(
+            id: '',
+            code: 'P-1',
+            name: 'Sin permiso',
+            unit: 'unidad',
+            isService: false,
+            purchasePrice: 1,
+            salePrice: 2,
+            stock: 0,
+            minimumStock: 0,
+          ),
+        ),
+        throwsA(isA<CapcException>()),
+      );
+
+      repository.logout();
+      await repository.loginCentralOffline(
+        'consulta.productos',
+        'clave-central-segura-2026',
+        authorization,
+      );
+      expect(repository.hasPermission('productos.ver'), isTrue);
+      expect(repository.hasPermission('productos.crear'), isFalse);
+
+      final renewed = OfflineAuthorization(
+        businessId: repository.businessId,
+        deviceId: repository.deviceId,
+        userId: 'central-user',
+        principalName: 'Consulta renovada',
+        username: 'consulta.productos',
+        roleType: 'administrator',
+        permissions: const ['productos.ver', 'productos.crear'],
+        securityVersion: 5,
+        issuedAt: issued.add(const Duration(hours: 1)),
+        expiresAt: issued.add(const Duration(hours: 73)),
+      );
+      await repository.refreshCentralAuthorization(renewed);
+      expect(repository.currentUser!.name, 'Consulta renovada');
+      expect(repository.hasPermission('productos.crear'), isTrue);
+    },
+  );
 
   test(
     'sin CAPC_SYNC_URL no lee credenciales ni habilita conexiones',
@@ -217,6 +366,257 @@ void main() {
     },
   );
 
+  test(
+    'peticiones sin cuerpo no anuncian JSON vacío al generar código y salir',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final client = _RealHttpOverrides().createHttpClient(null);
+      addTearDown(() async {
+        client.close(force: true);
+        await server.close(force: true);
+      });
+      final paths = <String>[];
+      server.listen((request) async {
+        paths.add(request.uri.path);
+        final body = await utf8.decoder.bind(request).join();
+        if (body.isEmpty &&
+            request.headers.contentType?.mimeType == 'application/json') {
+          request.response.statusCode = 400;
+          request.response.write(jsonEncode({'error': 'invalid_request'}));
+        } else if (request.uri.path.endsWith('/link-codes')) {
+          request.response.statusCode = 201;
+          request.response.write(
+            jsonEncode({
+              'code': 'ABCD234567',
+              'expiresAt': DateTime.now()
+                  .toUtc()
+                  .add(const Duration(minutes: 10))
+                  .toIso8601String(),
+            }),
+          );
+        } else {
+          request.response.statusCode = 204;
+        }
+        await request.response.close();
+      });
+      final credentials = MemoryCredentialStore();
+      await credentials.write(
+        _DeletionController(repository: repository).session!,
+      );
+      final controller = RemoteIdentityController(
+        repository: repository,
+        credentials: credentials,
+        client: client,
+        configuration: SyncConfiguration(
+          baseUri: Uri.parse('http://localhost:${server.port}'),
+        ),
+      );
+      await controller.initialize();
+      expect((await controller.createLinkCode()).code, 'ABCD234567');
+      await controller.logout();
+      expect(paths, ['/api/v1/identity/link-codes', '/api/v1/identity/logout']);
+      expect(await credentials.read(), isNull);
+    },
+  );
+
+  test(
+    'control central serializa roles y usuarios sin guardar el código',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final client = _RealHttpOverrides().createHttpClient(null);
+      addTearDown(() async {
+        client.close(force: true);
+        await server.close(force: true);
+      });
+      final requests = <Map<String, Object?>>[];
+      server.listen((request) async {
+        final text = await utf8.decoder.bind(request).join();
+        requests.add({
+          'method': request.method,
+          'path': request.uri.path,
+          'body': text.isEmpty ? null : jsonDecode(text),
+        });
+        final response = switch (request.uri.path) {
+          '/api/v1/access/permissions' => {
+            'permissions': [
+              {
+                'key': 'ventas.ver',
+                'module': 'ventas',
+                'action': 'ver',
+                'description': 'Consultar ventas',
+              },
+            ],
+          },
+          '/api/v1/access/roles' =>
+            request.method == 'GET'
+                ? {
+                    'roles': [
+                      {
+                        'id': '11111111-1111-4111-8111-111111111111',
+                        'name': 'Cajero',
+                        'roleType': 'operational',
+                        'permissions': ['ventas.ver'],
+                        'system': false,
+                        'version': 1,
+                      },
+                    ],
+                  }
+                : {
+                    'role': {
+                      'id': '11111111-1111-4111-8111-111111111111',
+                      'name': 'Cajero',
+                      'roleType': 'operational',
+                      'permissions': ['ventas.ver'],
+                      'system': false,
+                      'version': 1,
+                    },
+                  },
+          '/api/v1/access/users' => {
+            'user': {
+              'id': '22222222-2222-4222-8222-222222222222',
+              'name': 'Carlos',
+              'username': 'carlos',
+              'email': null,
+              'active': true,
+              'activated': false,
+              'roles': [
+                {
+                  'id': '11111111-1111-4111-8111-111111111111',
+                  'name': 'Cajero',
+                },
+              ],
+              'securityVersion': 1,
+            },
+            'activation_code': 'codigo-secreto-de-un-solo-uso',
+            'activation_expires_at': '2026-10-01T00:00:00.000Z',
+          },
+          '/api/v1/access/activate' => <String, Object?>{},
+          '/api/v1/access/login' => {
+            'business_id': repository.businessId,
+            'device_id': repository.deviceId,
+            'user_id': '22222222-2222-4222-8222-222222222222',
+            'permissions': ['sync:read', 'sync:write', 'ventas.ver'],
+            'access_token': 'central-access-token',
+            'refresh_token': 'central-refresh-token',
+            'access_expires_at': DateTime.now()
+                .toUtc()
+                .add(const Duration(hours: 1))
+                .toIso8601String(),
+            'refresh_expires_at': DateTime.now()
+                .toUtc()
+                .add(const Duration(days: 1))
+                .toIso8601String(),
+          },
+          _ => <String, Object?>{},
+        };
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode(response));
+        await request.response.close();
+      });
+      final credentials = MemoryCredentialStore();
+      await credentials.write(
+        RemoteSession(
+          businessId: repository.businessId,
+          deviceId: repository.deviceId,
+          accessToken: 'access-token',
+          refreshToken: 'refresh-token',
+          accessExpiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+          refreshExpiresAt: DateTime.now().toUtc().add(const Duration(days: 1)),
+          permissions: const ['access:read', 'access:manage'],
+        ),
+      );
+      final controller = RemoteIdentityController(
+        repository: repository,
+        credentials: credentials,
+        client: client,
+        configuration: SyncConfiguration(
+          baseUri: Uri.parse('http://localhost:${server.port}'),
+        ),
+      );
+      await controller.initialize();
+      expect(
+        (await controller.listAccessPermissions()).single.key,
+        'ventas.ver',
+      );
+      final role = (await controller.listAccessRoles()).single;
+      await controller.saveAccessRole(
+        name: role.name,
+        roleType: role.roleType,
+        permissions: role.permissions,
+      );
+      final created = await controller.createAccessUser(
+        name: 'Carlos',
+        username: 'carlos',
+        roleIds: [role.id],
+      );
+      expect(created.user.activated, isFalse);
+      expect(created.activationCode, 'codigo-secreto-de-un-solo-uso');
+      expect(requests.last['body'], {
+        'name': 'Carlos',
+        'username': 'carlos',
+        'role_ids': [role.id],
+      });
+      await controller.activateAccessUser(
+        username: 'carlos',
+        activationCode: created.activationCode,
+        password: 'central-password-2026',
+      );
+      await controller.loginAccessUser(
+        username: 'carlos',
+        password: 'central-password-2026',
+      );
+      expect(
+        controller.session!.userId,
+        '22222222-2222-4222-8222-222222222222',
+      );
+      expect(controller.session!.permissions, contains('ventas.ver'));
+      expect(requests.toString(), isNot(contains('refresh-token')));
+    },
+  );
+
+  testWidgets('generar código muestra el código y su vencimiento', (
+    tester,
+  ) async {
+    final controller = _DeletionController(repository: repository);
+    await tester.pumpWidget(
+      MaterialApp(home: RemoteIdentityPage(controller: controller)),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Generar código temporal'));
+    // The request remains busy while the modal is open, so its underlying
+    // progress indicator keeps animating until the user dismisses the code.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('Código de vinculación'), findsOneWidget);
+    expect(find.text('ABCD234567'), findsOneWidget);
+    expect(find.textContaining('Vence a las'), findsOneWidget);
+    await tester.tap(find.text('Listo'));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets(
+    'fallo al generar código aparece sin buscar al final de la página',
+    (tester) async {
+      final controller = _DeletionController(repository: repository)
+        ..failLinkCode = true;
+      await tester.pumpWidget(
+        MaterialApp(home: RemoteIdentityPage(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Generar código temporal'));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(
+          of: find.byType(SnackBar),
+          matching: find.text('No se pudo generar el código.'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('eliminación remota exige contraseña y confirmación escrita', (
     tester,
   ) async {
@@ -265,30 +665,33 @@ void main() {
     );
   });
 
-  test('coordinador ejecuta sincronización manual y actualiza el estado', () async {
-    final controller = _DeletionController(repository: repository);
-    final configuration = SyncConfiguration(
-      baseUri: controller.configuration.baseUri,
-      tokenProvider: controller.accessToken,
-    );
-    final engine = _FakeSyncEngine(
-      testRepository: repository,
-      configuration: configuration,
-    );
-    final coordinator = SyncCoordinator(
-      repository: repository,
-      identity: controller,
-      retryInterval: const Duration(days: 1),
-      engine: engine,
-    );
-    addTearDown(coordinator.dispose);
-    await coordinator.refreshStatus();
-    final result = await coordinator.syncNow();
-    expect(engine.calls, 1);
-    expect(result, isNotNull);
-    expect(coordinator.snapshot!.status, SyncStatus.synced);
-    expect(coordinator.running, isFalse);
-  });
+  test(
+    'coordinador ejecuta sincronización manual y actualiza el estado',
+    () async {
+      final controller = _DeletionController(repository: repository);
+      final configuration = SyncConfiguration(
+        baseUri: controller.configuration.baseUri,
+        tokenProvider: controller.accessToken,
+      );
+      final engine = _FakeSyncEngine(
+        testRepository: repository,
+        configuration: configuration,
+      );
+      final coordinator = SyncCoordinator(
+        repository: repository,
+        identity: controller,
+        retryInterval: const Duration(days: 1),
+        engine: engine,
+      );
+      addTearDown(coordinator.dispose);
+      await coordinator.refreshStatus();
+      final result = await coordinator.syncNow();
+      expect(engine.calls, 1);
+      expect(result, isNotNull);
+      expect(coordinator.snapshot!.status, SyncStatus.synced);
+      expect(coordinator.running, isFalse);
+    },
+  );
 
   testWidgets('pantalla remota offline cabe a 375 px con texto al 200%', (
     tester,

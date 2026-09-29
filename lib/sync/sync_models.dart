@@ -103,16 +103,19 @@ class SyncPushAck {
     required this.operationId,
     required this.serverCursor,
     required this.duplicate,
+    this.conflicts = 0,
   });
 
   final String operationId;
   final int serverCursor;
   final bool duplicate;
+  final int conflicts;
 
   factory SyncPushAck.fromJson(Map<String, Object?> json) => SyncPushAck(
     operationId: json['operation_id'] as String,
     serverCursor: json['server_cursor'] as int,
     duplicate: json['duplicate'] as bool? ?? false,
+    conflicts: json['conflicts'] as int? ?? 0,
   );
 }
 
@@ -176,4 +179,21 @@ class SyncApplyResult {
   const SyncApplyResult({required this.applied, required this.conflicts});
   final int applied;
   final int conflicts;
+}
+
+class SyncConflictRecord {
+  const SyncConflictRecord({
+    required this.id,
+    required this.operationId,
+    required this.kind,
+    required this.entityId,
+    required this.details,
+    required this.createdAt,
+    this.resolvedAt,
+  });
+
+  final String id, operationId, kind, entityId;
+  final Map<String, Object?> details;
+  final DateTime createdAt;
+  final DateTime? resolvedAt;
 }

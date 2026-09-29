@@ -52,6 +52,8 @@ class CapcApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final identity =
+        remoteIdentity ?? RemoteIdentityController(repository: repository);
     final scheme = ColorScheme.fromSeed(
       seedColor: _green,
       brightness: Brightness.light,
@@ -130,12 +132,11 @@ class CapcApp extends StatelessWidget {
       ),
       home: CapcAccessGate(
         repository: repository,
+        remoteIdentity: identity,
         builder: (onLogout) => _CapcHome(
           repository: repository,
           onLogout: onLogout,
-          remoteIdentity:
-              remoteIdentity ??
-              RemoteIdentityController(repository: repository),
+          remoteIdentity: identity,
           syncCoordinator: syncCoordinator,
           updateController: updateController,
         ),
@@ -180,6 +181,10 @@ class _CapcHomeState extends State<_CapcHome> {
   List<Sale> _sales = [];
   List<Payment> _payments = [];
   List<SaleReturnRecord> _returns = [];
+  BusinessProfile _business = const BusinessProfile(
+    id: '',
+    name: 'CAPC MULTISERVICIO',
+  );
   final Map<String, int> _cart = {};
   final Map<String, int> _prices = {};
   final _saleSearch = TextEditingController();
@@ -215,6 +220,14 @@ class _CapcHomeState extends State<_CapcHome> {
     _reportFrom = DateTime(today.year, today.month, 1);
     _reportTo = today;
     _deviceSummary = appPlatform.deviceSummary();
+    if (widget.repository.currentUser?.central == true) {
+      for (var index = 0; index < _navigation.length; index++) {
+        if (_canNavigate(index)) {
+          _page = index;
+          break;
+        }
+      }
+    }
     _refresh();
   }
 
@@ -241,11 +254,26 @@ class _CapcHomeState extends State<_CapcHome> {
 
   Future<void> _refresh() async {
     try {
-      final products = await widget.repository.listProducts();
-      final customers = await widget.repository.listCustomers();
-      final sales = await widget.repository.listSales();
-      final payments = await widget.repository.listPayments();
-      final returns = await widget.repository.listSaleReturns();
+      final products = _can('productos.ver')
+          ? await widget.repository.listProducts()
+          : <Product>[];
+      final customers = _can('clientes.ver')
+          ? await widget.repository.listCustomers()
+          : <Customer>[];
+      final sales = _can('ventas.ver')
+          ? await widget.repository.listSales()
+          : <Sale>[];
+      final payments = _can('ventas.ver')
+          ? await widget.repository.listPayments()
+          : <Payment>[];
+      final returns = _can('ventas.ver')
+          ? await widget.repository.listSaleReturns()
+          : <SaleReturnRecord>[];
+      final business = _can('configuracion.ver')
+          ? await widget.repository.getBusinessProfile()
+          : BusinessProfile(id: widget.repository.businessId, name: 'CAPC');
+      CapcDocuments.configureBusiness(business.name);
+      CapcSpreadsheets.configureBusiness(business.name);
       if (!mounted) return;
       setState(() {
         _products = products;
@@ -258,6 +286,7 @@ class _CapcHomeState extends State<_CapcHome> {
         _sales = sales;
         _payments = payments;
         _returns = returns;
+        _business = business;
         _loading = false;
         _loadError = null;
       });
@@ -363,8 +392,33 @@ class _CapcHomeState extends State<_CapcHome> {
     return null;
   }
 
-  bool get _manager => widget.repository.currentUser?.role != UserRole.cashier;
+  bool _can(String permission) => widget.repository.hasPermission(permission);
+  bool get _manager =>
+      widget.repository.currentUser?.centralRoleType == 'administrator' ||
+      (widget.repository.currentUser?.central != true &&
+          widget.repository.currentUser?.role != UserRole.cashier);
   bool get _owner => widget.repository.currentUser?.role == UserRole.owner;
+  bool _canNavigate(int index) {
+    if (widget.repository.currentUser?.central != true) {
+      return _manager || ![2, 5, 8, 10].contains(index);
+    }
+    return switch (index) {
+      0 => _can('ventas.ver') || _can('inventario.ver'),
+      1 => _can('ventas.crear') && _can('productos.ver'),
+      2 => _can('productos.ver') || _can('inventario.ver'),
+      3 => _can('clientes.ver'),
+      4 => _can('ventas.ver'),
+      5 => _can('reportes.ver'),
+      6 => _can('configuracion.ver'),
+      7 => _can('caja.ver'),
+      8 => _can('compras.ver') || _can('proveedores.ver'),
+      9 => _can('cotizaciones.ver') || _can('trabajos.ver'),
+      10 =>
+        _can('access:read') || _can('auditoria.ver') || _can('conflictos.ver'),
+      _ => false,
+    };
+  }
+
   int get _cartTotal => _cart.entries.fold(
     0,
     (sum, e) =>
@@ -440,9 +494,9 @@ class _CapcHomeState extends State<_CapcHome> {
                                     ).textTheme.headlineMedium,
                                   ),
                                   const SizedBox(height: 4),
-                                  const Text(
-                                    'CAPC MULTISERVICIO',
-                                    style: TextStyle(
+                                  Text(
+                                    _business.name,
+                                    style: const TextStyle(
                                       color: _muted,
                                       fontSize: 12,
                                       letterSpacing: 1.3,
@@ -453,7 +507,9 @@ class _CapcHomeState extends State<_CapcHome> {
                             ),
                             if (constraints.maxWidth > 780) _syncTag(),
                             const SizedBox(width: 8),
-                            if (widget.syncCoordinator?.enabled ?? false)
+                            if ((widget.syncCoordinator?.enabled ?? false) &&
+                                _can('sync:read') &&
+                                _can('sync:write'))
                               IconButton(
                                 tooltip: widget.remoteIdentity.connected
                                     ? 'Sincronizar ahora'
@@ -482,25 +538,28 @@ class _CapcHomeState extends State<_CapcHome> {
                                   : () => _run(_refreshAll),
                               icon: const Icon(Icons.refresh),
                             ),
-                            IconButton(
-                              tooltip: 'Seguridad de mi cuenta',
-                              onPressed: _busy
-                                  ? null
-                                  : () async {
-                                      await Navigator.of(context).push<void>(
-                                        MaterialPageRoute(
-                                          builder: (_) => AccountSecurityPage(
-                                            repository: widget.repository,
+                            if (widget.repository.currentUser?.central != true)
+                              IconButton(
+                                tooltip: 'Seguridad de mi cuenta',
+                                onPressed: _busy
+                                    ? null
+                                    : () async {
+                                        await Navigator.of(context).push<void>(
+                                          MaterialPageRoute(
+                                            builder: (_) => AccountSecurityPage(
+                                              repository: widget.repository,
+                                            ),
                                           ),
-                                        ),
-                                      );
-                                      if (mounted &&
-                                          !widget.repository.isAuthenticated) {
-                                        widget.onLogout();
-                                      }
-                                    },
-                              icon: const Icon(Icons.key_outlined),
-                            ),
+                                        );
+                                        if (mounted &&
+                                            !widget
+                                                .repository
+                                                .isAuthenticated) {
+                                          widget.onLogout();
+                                        }
+                                      },
+                                icon: const Icon(Icons.key_outlined),
+                              ),
                             IconButton(
                               tooltip: 'Cerrar sesión',
                               onPressed: _busy
@@ -578,8 +637,7 @@ class _CapcHomeState extends State<_CapcHome> {
           child: ListView.builder(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             itemCount: _navigation.length,
-            itemBuilder: (context, index) =>
-                !_manager && [2, 5, 8, 10].contains(index)
+            itemBuilder: (context, index) => !_canNavigate(index)
                 ? const SizedBox.shrink()
                 : ListTile(
                     key: ValueKey('navigation-${_navigation[index].$1}'),
@@ -648,8 +706,7 @@ class _CapcHomeState extends State<_CapcHome> {
             child: ListView.builder(
               padding: const EdgeInsets.symmetric(horizontal: 10),
               itemCount: _navigation.length,
-              itemBuilder: (context, index) =>
-                  !_manager && [2, 5, 8, 10].contains(index)
+              itemBuilder: (context, index) => !_canNavigate(index)
                   ? const SizedBox.shrink()
                   : Padding(
                       padding: const EdgeInsets.only(bottom: 8),
@@ -744,6 +801,17 @@ class _CapcHomeState extends State<_CapcHome> {
       page: _page,
       refreshRevision: _managementRevision,
       onChanged: _refresh,
+      remoteIdentity: widget.remoteIdentity,
+      onOpenCentralAccess: _page == 10
+          ? () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => RemoteIdentityPage(
+                  controller: widget.remoteIdentity,
+                  syncCoordinator: widget.syncCoordinator,
+                ),
+              ),
+            )
+          : null,
     ),
   };
 
@@ -804,28 +872,30 @@ class _CapcHomeState extends State<_CapcHome> {
               spacing: 12,
               runSpacing: 12,
               children: [
-                FilledButton.icon(
-                  onPressed: _busy ? null : () => setState(() => _page = 1),
-                  icon: const Icon(Icons.add_shopping_cart),
-                  label: const Text('Nueva venta'),
-                ),
-                if (_manager)
+                if (_can('ventas.crear') && _can('productos.ver'))
+                  FilledButton.icon(
+                    onPressed: _busy ? null : () => setState(() => _page = 1),
+                    icon: const Icon(Icons.add_shopping_cart),
+                    label: const Text('Nueva venta'),
+                  ),
+                if (_can('productos.crear'))
                   OutlinedButton.icon(
                     onPressed: _busy ? null : () => _editProduct(),
                     icon: const Icon(Icons.add),
                     label: const Text('Registrar producto'),
                   ),
-                if (_manager)
+                if (_can('reportes.ver'))
                   OutlinedButton.icon(
                     onPressed: _busy ? null : () => setState(() => _page = 5),
                     icon: const Icon(Icons.bar_chart_outlined),
                     label: const Text('Ver resultados'),
                   ),
-                OutlinedButton.icon(
-                  onPressed: _busy ? null : () => setState(() => _page = 7),
-                  icon: const Icon(Icons.account_balance_outlined),
-                  label: const Text('Abrir / cerrar caja'),
-                ),
+                if (_can('caja.ver'))
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : () => setState(() => _page = 7),
+                    icon: const Icon(Icons.account_balance_outlined),
+                    label: const Text('Abrir / cerrar caja'),
+                  ),
               ],
             ),
           ],
@@ -1060,7 +1130,7 @@ class _CapcHomeState extends State<_CapcHome> {
                             '${_money(_prices[p.id] ?? p.salePrice)} / ${p.unit}',
                             style: const TextStyle(fontSize: 12, color: _muted),
                           ),
-                          if (_manager)
+                          if (_can('precios.editar'))
                             TextButton(
                               onPressed: _busy
                                   ? null
@@ -1184,20 +1254,21 @@ class _CapcHomeState extends State<_CapcHome> {
                           () => _customerId = value == '' ? null : value,
                         ),
                 ),
-                TextButton.icon(
-                  onPressed: _busy
-                      ? null
-                      : () async {
-                          final customerId = await _editCustomer();
-                          if (customerId != null &&
-                              mounted &&
-                              _customers.any((c) => c.id == customerId)) {
-                            _changeSale(() => _customerId = customerId);
-                          }
-                        },
-                  icon: const Icon(Icons.person_add_alt_1_outlined),
-                  label: const Text('Nuevo cliente'),
-                ),
+                if (_can('clientes.crear'))
+                  TextButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () async {
+                            final customerId = await _editCustomer();
+                            if (customerId != null &&
+                                mounted &&
+                                _customers.any((c) => c.id == customerId)) {
+                              _changeSale(() => _customerId = customerId);
+                            }
+                          },
+                    icon: const Icon(Icons.person_add_alt_1_outlined),
+                    label: const Text('Nuevo cliente'),
+                  ),
                 DropdownButtonFormField<String>(
                   initialValue: _paymentMode,
                   isExpanded: true,
@@ -1519,11 +1590,12 @@ class _CapcHomeState extends State<_CapcHome> {
           spacing: 12,
           runSpacing: 12,
           children: [
-            FilledButton.icon(
-              onPressed: _busy ? null : () => _editProduct(),
-              icon: const Icon(Icons.add),
-              label: const Text('Nuevo producto o servicio'),
-            ),
+            if (_can('productos.crear'))
+              FilledButton.icon(
+                onPressed: _busy ? null : () => _editProduct(),
+                icon: const Icon(Icons.add),
+                label: const Text('Nuevo producto o servicio'),
+              ),
             OutlinedButton.icon(
               onPressed: _busy
                   ? null
@@ -1537,23 +1609,24 @@ class _CapcHomeState extends State<_CapcHome> {
               icon: const Icon(Icons.download_outlined),
               label: const Text('Descargar plantilla Excel'),
             ),
-            OutlinedButton.icon(
-              onPressed: _busy
-                  ? null
-                  : () => _run(() async {
-                      final count = await showProductImport(
-                        context,
-                        widget.repository,
-                      );
-                      if (count != null && mounted) {
-                        setState(() => _inventoryPage = 0);
-                        await _refreshAll();
-                        _notify('$count productos y servicios importados.');
-                      }
-                    }),
-              icon: const Icon(Icons.upload_file_outlined),
-              label: const Text('Importar Excel'),
-            ),
+            if (_can('productos.crear'))
+              OutlinedButton.icon(
+                onPressed: _busy
+                    ? null
+                    : () => _run(() async {
+                        final count = await showProductImport(
+                          context,
+                          widget.repository,
+                        );
+                        if (count != null && mounted) {
+                          setState(() => _inventoryPage = 0);
+                          await _refreshAll();
+                          _notify('$count productos y servicios importados.');
+                        }
+                      }),
+                icon: const Icon(Icons.upload_file_outlined),
+                label: const Text('Importar Excel'),
+              ),
             OutlinedButton.icon(
               onPressed: _busy
                   ? null
@@ -1692,24 +1765,25 @@ class _CapcHomeState extends State<_CapcHome> {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          TextButton.icon(
-                            onPressed: _busy ? null : () => _editProduct(p),
-                            icon: const Icon(Icons.edit_outlined),
-                            label: const Text('Editar'),
-                          ),
-                          if (!p.isService)
+                          if (_can('productos.editar'))
+                            TextButton.icon(
+                              onPressed: _busy ? null : () => _editProduct(p),
+                              icon: const Icon(Icons.edit_outlined),
+                              label: const Text('Editar'),
+                            ),
+                          if (!p.isService && _can('inventario.ajustar'))
                             TextButton.icon(
                               onPressed: _busy ? null : () => _adjustStock(p),
                               icon: const Icon(Icons.swap_vert),
                               label: const Text('Entrada / salida de stock'),
                             ),
-                          if (!p.isService)
+                          if (!p.isService && _can('inventario.ver'))
                             TextButton.icon(
                               onPressed: _busy ? null : () => _stockHistory(p),
                               icon: const Icon(Icons.history),
                               label: const Text('Movimientos'),
                             ),
-                          if (p.isService)
+                          if (p.isService && _can('productos.editar'))
                             TextButton.icon(
                               onPressed: _busy ? null : () => _recipe(p),
                               icon: const Icon(Icons.build_outlined),
@@ -1744,11 +1818,12 @@ class _CapcHomeState extends State<_CapcHome> {
           spacing: 12,
           runSpacing: 12,
           children: [
-            FilledButton.icon(
-              onPressed: _busy ? null : () => _editCustomer(),
-              icon: const Icon(Icons.person_add_alt_1_outlined),
-              label: const Text('Nuevo cliente'),
-            ),
+            if (_can('clientes.crear'))
+              FilledButton.icon(
+                onPressed: _busy ? null : () => _editCustomer(),
+                icon: const Icon(Icons.person_add_alt_1_outlined),
+                label: const Text('Nuevo cliente'),
+              ),
             OutlinedButton.icon(
               onPressed: _busy
                   ? null
@@ -1831,13 +1906,14 @@ class _CapcHomeState extends State<_CapcHome> {
                               ],
                             ),
                           ),
-                          IconButton(
-                            tooltip: 'Editar ${customer.name}',
-                            onPressed: _busy
-                                ? null
-                                : () => _editCustomer(customer),
-                            icon: const Icon(Icons.edit_outlined),
-                          ),
+                          if (_can('clientes.editar'))
+                            IconButton(
+                              tooltip: 'Editar ${customer.name}',
+                              onPressed: _busy
+                                  ? null
+                                  : () => _editCustomer(customer),
+                              icon: const Icon(Icons.edit_outlined),
+                            ),
                         ],
                       ),
                       _Tag(
@@ -1897,12 +1973,13 @@ class _CapcHomeState extends State<_CapcHome> {
                                     fontWeight: FontWeight.w700,
                                   ),
                                 ),
-                                OutlinedButton(
-                                  onPressed: _busy
-                                      ? null
-                                      : () => _addPayment(sale),
-                                  child: const Text('Registrar abono'),
-                                ),
+                                if (_can('ventas.editar'))
+                                  OutlinedButton(
+                                    onPressed: _busy
+                                        ? null
+                                        : () => _addPayment(sale),
+                                    child: const Text('Registrar abono'),
+                                  ),
                                 TextButton(
                                   onPressed: _busy
                                       ? null
@@ -2230,7 +2307,37 @@ class _CapcHomeState extends State<_CapcHome> {
       _section(
         'Tu espacio de trabajo',
         children: [
-          const _Detail('Negocio', 'CAPC MULTISERVICIO'),
+          _Detail('Negocio', _business.name),
+          if (_business.phone.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _Detail('Teléfono', _business.phone),
+          ],
+          if (_business.address.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _Detail('Dirección', _business.address),
+          ],
+          if (_business.email.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _Detail('Correo', _business.email),
+          ],
+          if (_can('configuracion.editar')) ...[
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: _busy || !widget.remoteIdentity.connected
+                  ? null
+                  : _editBusiness,
+              icon: const Icon(Icons.edit_outlined),
+              label: const Text('Editar información del negocio'),
+            ),
+            if (!widget.remoteIdentity.connected)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  'Conecta el negocio para modificar su configuración.',
+                  style: TextStyle(color: _muted),
+                ),
+              ),
+          ],
           const SizedBox(height: 16),
           const _Detail(
             'Modalidad',
@@ -2254,7 +2361,7 @@ class _CapcHomeState extends State<_CapcHome> {
             icon: Icons.offline_pin_outlined,
           ),
           const SizedBox(height: 16),
-          if (_owner)
+          if (_owner || _can('access:read'))
             OutlinedButton.icon(
               onPressed: _busy
                   ? null
@@ -2308,7 +2415,7 @@ class _CapcHomeState extends State<_CapcHome> {
                 : 'Guarda una copia de la base de datos en otra carpeta o en una memoria USB. Conserva varias copias con fecha.',
           ),
           const SizedBox(height: 16),
-          if (_manager)
+          if (_can('respaldos.crear'))
             FilledButton.icon(
               onPressed: _busy ? null : _backup,
               icon: const Icon(Icons.save_alt),
@@ -2325,7 +2432,7 @@ class _CapcHomeState extends State<_CapcHome> {
             style: const TextStyle(fontSize: 12),
           ),
           const SizedBox(height: 12),
-          if (_owner) ...[
+          if (_can('respaldos.restaurar')) ...[
             const SizedBox(height: 12),
             OutlinedButton.icon(
               onPressed: _busy ? null : _restore,
@@ -2347,7 +2454,7 @@ class _CapcHomeState extends State<_CapcHome> {
             'Incluye materiales y servicios para un café internet. Revisa los precios y ajusta las existencias antes de usarlo en tu negocio. No crea ventas ni clientes.',
           ),
           const SizedBox(height: 16),
-          if (_manager)
+          if (_can('productos.crear'))
             OutlinedButton.icon(
               onPressed: _busy || _products.isNotEmpty ? null : _loadExamples,
               icon: const Icon(Icons.inventory_2_outlined),
@@ -2383,6 +2490,52 @@ class _CapcHomeState extends State<_CapcHome> {
       ),
     ],
   );
+
+  Future<void> _editBusiness() async {
+    if (!widget.remoteIdentity.connected) {
+      _notify(
+        'Conecta el negocio para modificar su configuración.',
+        error: true,
+      );
+      return;
+    }
+    final saved = await entryDialog(
+      context,
+      title: 'Información del negocio',
+      fields: [
+        EntryField('name', 'Nombre', value: _business.name),
+        EntryField(
+          'phone',
+          'Teléfono',
+          value: _business.phone,
+          required: false,
+        ),
+        EntryField(
+          'address',
+          'Dirección',
+          value: _business.address,
+          required: false,
+        ),
+        EntryField('email', 'Correo', value: _business.email, required: false),
+      ],
+      onSave: (values) => widget.repository.saveBusinessProfile(
+        BusinessProfile(
+          id: widget.repository.businessId,
+          name: values['name']!,
+          phone: values['phone']!,
+          address: values['address']!,
+          email: values['email']!,
+          configurationJson: _business.configurationJson,
+          logoBytes: _business.logoBytes,
+          logoMime: _business.logoMime,
+        ),
+      ),
+    );
+    if (saved && mounted) {
+      await _refresh();
+      _notify('Información del negocio guardada en este dispositivo.');
+    }
+  }
 
   Future<void> _backup() => _run(() async {
     final name =
@@ -3330,7 +3483,7 @@ class _CapcHomeState extends State<_CapcHome> {
                             icon: const Icon(Icons.save_alt),
                             label: const Text('Guardar PDF tirilla'),
                           ),
-                          if (_manager && !sale.cancelled)
+                          if (_can('ventas.anular') && !sale.cancelled)
                             OutlinedButton.icon(
                               onPressed: busy
                                   ? null
@@ -3343,7 +3496,7 @@ class _CapcHomeState extends State<_CapcHome> {
                               icon: const Icon(Icons.undo),
                               label: const Text('Devolución'),
                             ),
-                          if (_manager && !sale.cancelled)
+                          if (_can('devoluciones.crear') && !sale.cancelled)
                             OutlinedButton.icon(
                               onPressed: busy
                                   ? null

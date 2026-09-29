@@ -63,7 +63,12 @@ class CapcReportData {
 /// Local PDF generation: bundled fonts, no network requests or printer access
 /// in the build methods. Printing always uses the platform's explicit dialog.
 class CapcDocuments {
-  static const _business = 'CAPC MULTISERVICIO';
+  static String _business = 'CAPC MULTISERVICIO';
+  static void configureBusiness(String name) {
+    final value = name.trim();
+    _business = value.isEmpty ? 'CAPC MULTISERVICIO' : value;
+  }
+
   static const _notice = 'Comprobante interno · Sin validez fiscal';
   static const _ink = PdfColor.fromInt(0xff173a36);
   static const _muted = PdfColor.fromInt(0xff52665f);

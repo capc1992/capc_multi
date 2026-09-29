@@ -18,19 +18,28 @@ Referencia: `858dedbc31367074408ebe623027b3381e0b97d5` en `feature/cloud-sync-fo
 - almacenamiento Flutter mediante Android Keystore/Windows Credential Manager;
 - pantallas de conectar, ingresar, vincular, listar/revocar equipos y cerrar sesión;
 - protección contra mezcla: solo instalación nueva/sin movimientos adopta automáticamente el ID canónico;
-- SQLite esquema 4 y materializadores de compras/proveedores, devoluciones, caja/gastos, cotizaciones, trabajos/anticipos;
+- SQLite esquema 7 y materializadores de compras/proveedores, devoluciones, caja/gastos, cotizaciones, trabajos/anticipos y configuración del negocio;
 - migraciones PostgreSQL ascendentes/descendentes y GitHub Actions con PostgreSQL 16 real;
 - paquete Windows portable para instalar/copiar en dos o más equipos, sin incluir datos ni credenciales.
 
 La implementación no se considera aprobada contra PostgreSQL hasta que el workflow `Cloud Sync Identity` termine satisfactoriamente en GitHub. No se accedió al VPS ni a la base real.
 
-## Etapa 3 — resolución y experiencia operativa
+## Etapa 3 — resolución y experiencia operativa (implementada localmente)
 
-- estado de cola/último éxito/reintento manual;
-- bandeja de conflictos y resolución asistida;
-- numeración visible sin colisiones entre dispositivos;
-- reintentos progresivos y sincronización en segundo plano según plataforma;
+- plano central de usuarios, roles personalizados y permisos granulares (implementado);
+- tipo de rol administrador/operativo configurable sin privilegios implícitos (implementado);
+- alta de usuarios mediante códigos de activación de un solo uso (implementado);
+- ingreso central online y acceso offline con verificador Argon2id y concesión Ed25519 de 72 horas (implementado);
+- autorización granular en repositorio, navegación y API de roles/usuarios (implementado);
+- estado de cola/último éxito/reintento manual (implementado);
+- auditoría central de seguridad y operaciones por usuario y dispositivo (implementada);
+- renovación automática de la concesión offline de una sesión central conectada (implementada);
+- bandeja de conflictos con permisos de consulta/resolución y revisión durable (implementada);
+- numeración visible sin pérdida ante colisiones entre dispositivos (implementada);
+- reintentos progresivos y sincronización automática mientras la aplicación está activa (implementado);
 - flujo explícito de migración de un negocio con datos (nunca mezcla automática).
+
+La resolución semántica de un conflicto financiero se mantiene como una operación compensatoria supervisada. Marcar un conflicto como revisado no reescribe hechos contables.
 
 ## Etapa 4 — piloto controlado
 
@@ -40,6 +49,8 @@ La implementación no se considera aprobada contra PostgreSQL hasta que el workf
 - respaldo/restore, observabilidad y reversa ensayados.
 
 Requiere autorización separada para acceder al VPS.
+
+La matriz reproducible y los límites de la validación local están en `VALIDACION-OFFLINE-FIRST.md`.
 
 ## Etapa 5 — producción y distribución
 

@@ -123,7 +123,16 @@ void main() {
       );
       expect(jsonDecode(importAudit.details), {'count': 2});
       final data = snapshot();
-      expect(data['outbox'], hasLength(2));
+      final outbox = data['outbox']!;
+      expect(outbox, hasLength(3));
+      expect(
+        outbox.where((row) => row['kind'] == 'product.saved'),
+        hasLength(2),
+      );
+      expect(
+        outbox.where((row) => row['kind'] == 'stock.adjusted'),
+        hasLength(1),
+      );
       for (final table in data.values) {
         expect(
           table.every((row) => row['business_id'] == repository.businessId),
@@ -361,7 +370,16 @@ void main() {
       expect(saved.where((entry) => entry.code == 'COMMON'), hasLength(1));
       expect(saved.where((entry) => entry.code != 'COMMON'), hasLength(1));
       expect(await repository.listStockMovements(), hasLength(2));
-      expect(snapshot()['outbox'], hasLength(2));
+      final outbox = snapshot()['outbox']!;
+      expect(outbox, hasLength(4));
+      expect(
+        outbox.where((row) => row['kind'] == 'product.saved'),
+        hasLength(2),
+      );
+      expect(
+        outbox.where((row) => row['kind'] == 'stock.adjusted'),
+        hasLength(2),
+      );
       expect(
         (await repository.listAudit()).where(
           (entry) => entry.action == 'catalog.imported',

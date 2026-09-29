@@ -67,7 +67,25 @@ class JsonHttpSyncTransport implements SyncTransport {
   Future<Map<String, Object?>> _decode(HttpClientResponse response) async {
     final body = await utf8.decoder.bind(response).join();
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw SyncTransportException('El servidor rechazó la sincronización.');
+      String? code;
+      try {
+        final decoded = jsonDecode(body);
+        if (decoded is Map) code = decoded['error'] as String?;
+      } on FormatException {
+        // The status code remains authoritative when a proxy returns HTML.
+      }
+      final retryable =
+          response.statusCode == 408 ||
+          response.statusCode == 429 ||
+          response.statusCode >= 500;
+      throw SyncTransportException(
+        retryable
+            ? 'El servidor no está disponible temporalmente.'
+            : 'El servidor rechazó la sincronización.',
+        retryable: retryable,
+        code: code ?? 'http_${response.statusCode}',
+        statusCode: response.statusCode,
+      );
     }
     try {
       return Map<String, Object?>.from(jsonDecode(body) as Map);
@@ -137,8 +155,16 @@ class JsonHttpSyncTransport implements SyncTransport {
 }
 
 class SyncTransportException implements Exception {
-  const SyncTransportException(this.message);
+  const SyncTransportException(
+    this.message, {
+    this.retryable = true,
+    this.code,
+    this.statusCode,
+  });
   final String message;
+  final bool retryable;
+  final String? code;
+  final int? statusCode;
   @override
   String toString() => message;
 }

@@ -102,6 +102,28 @@ describe('identity request errors', () => {
     expect(logs.join('')).not.toContain('private-password');
   });
 
+  it('issues link codes for bodyless requests and rejects empty bodies advertised as JSON', async () => {
+    const { app } = setup();
+    const created = await app.inject({ method: 'POST', url: '/api/v1/identity/businesses', payload: business });
+    expect(created.statusCode).toBe(201);
+    const headers = {
+      authorization: `Bearer ${created.json().access_token}`,
+      'x-business-id': business.business_id,
+    };
+    const broken = await app.inject({
+      method: 'POST', url: '/api/v1/identity/link-codes',
+      headers: { ...headers, 'content-type': 'application/json' },
+    });
+    expect(broken.statusCode).toBe(400);
+    expect(broken.json().code).toBe('FST_ERR_CTP_EMPTY_JSON_BODY');
+    const fixed = await app.inject({ method: 'POST', url: '/api/v1/identity/link-codes', headers });
+    expect(fixed.statusCode).toBe(201);
+    expect(fixed.json().code).toEqual(expect.any(String));
+    expect(Date.parse(fixed.json().expiresAt)).toBeGreaterThan(Date.now());
+    const logout = await app.inject({ method: 'POST', url: '/api/v1/identity/logout', headers });
+    expect(logout.statusCode).toBe(204);
+  });
+
   it('creates and deletes an account using explicit JSON strings', async () => {
     const { app } = setup();
     const created = await app.inject({

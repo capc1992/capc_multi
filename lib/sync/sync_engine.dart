@@ -18,7 +18,10 @@ class SyncEngine {
   final SyncTransport? _transport;
   bool _running = false;
 
-  Future<SyncRunResult> runOnce({int batchSize = 100}) async {
+  Future<SyncRunResult> runOnce({
+    int batchSize = 100,
+    bool forceRetry = true,
+  }) async {
     if (!configuration.enabled || _transport == null) {
       await repository.setSyncStatus(SyncStatus.localOnly);
       return const SyncRunResult.disabled();
@@ -30,6 +33,7 @@ class SyncEngine {
     var pushed = 0, received = 0, applied = 0, conflicts = 0;
     try {
       await repository.setSyncStatus(SyncStatus.syncing);
+      if (forceRetry) await repository.retryFailedSyncNow();
       final outgoing = await repository.prepareSyncPush(limit: batchSize);
       if (outgoing.isNotEmpty) {
         try {
@@ -40,6 +44,10 @@ class SyncEngine {
           await repository.failSyncPush(
             outgoing.map((event) => event.operationId),
             _safeError(error),
+            retryable: error is! SyncTransportException || error.retryable,
+            code: error is SyncTransportException
+                ? error.code
+                : 'network_error',
           );
           rethrow;
         }

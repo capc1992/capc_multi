@@ -183,6 +183,28 @@ export class PostgresSyncStore implements SyncStore {
             operation.occurred_at,
           ],
         );
+        if (entity.type === 'business') {
+          const configuration = typeof entity.payload.configuration === 'string'
+            ? entity.payload.configuration
+            : JSON.stringify(entity.payload.configuration ?? {});
+          await client.query(
+            `UPDATE businesses
+             SET name=$2,phone=$3,address=$4,email=$5,configuration=$6::jsonb,
+                 version=$7,updated_at=$8,updated_by=$9
+             WHERE id=$1`,
+            [
+              operation.business_id,
+              textValue(entity.payload.name, 160),
+              textValue(entity.payload.phone, 80, true),
+              textValue(entity.payload.address, 500, true),
+              textValue(entity.payload.email, 320, true),
+              configuration,
+              entity.revision,
+              operation.occurred_at,
+              uuidValue(entity.payload.updated_by),
+            ],
+          );
+        }
       }
     }
     for (const movement of inventoryMovements(operation)) {
@@ -269,10 +291,22 @@ function entityRevision(operation: SyncOperation): {
   if (operation.type === 'product.saved' && typeof content.id === 'string') {
     return { type: 'product', id: content.id, revision: Number(content.revision ?? 1), payload: content };
   }
+  if (operation.type === 'product.deleted' && typeof content.id === 'string') {
+    return { type: 'product', id: content.id, revision: Number(content.revision ?? 1), payload: content };
+  }
+  if (operation.type === 'business.saved' && typeof content.id === 'string') {
+    return { type: 'business', id: content.id, revision: Number(content.revision ?? 1), payload: content };
+  }
   if (operation.type === 'customer.saved' && typeof content.id === 'string') {
     return { type: 'customer', id: content.id, revision: Number(content.revision ?? 1), payload: content };
   }
+  if (operation.type === 'customer.deleted' && typeof content.id === 'string') {
+    return { type: 'customer', id: content.id, revision: Number(content.revision ?? 1), payload: content };
+  }
   if (operation.type === 'supplier.saved' && typeof content.id === 'string') {
+    return { type: 'supplier', id: content.id, revision: Number(content.revision ?? 1), payload: content };
+  }
+  if (operation.type === 'supplier.deleted' && typeof content.id === 'string') {
     return { type: 'supplier', id: content.id, revision: Number(content.revision ?? 1), payload: content };
   }
   const quote = objectValue(content.quote) ?? content;
@@ -330,5 +364,19 @@ function isTerminalQuoteStatus(value: unknown): boolean {
 function objectValue(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
+    : null;
+}
+
+function textValue(value: unknown, maximum: number, optional = false): string {
+  if (typeof value !== 'string' || value.length > maximum || (!optional && value.trim().length === 0)) {
+    throw new Error('invalid_business_profile');
+  }
+  return value.trim();
+}
+
+function uuidValue(value: unknown): string | null {
+  return typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    ? value
     : null;
 }

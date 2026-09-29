@@ -28,6 +28,9 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
   String? _error;
   String? _success;
   List<RemoteDevice> _devices = const [];
+  List<RemotePermission> _permissions = const [];
+  List<RemoteAccessRole> _roles = const [];
+  List<RemoteAccessUser> _users = const [];
 
   @override
   void initState() {
@@ -67,8 +70,18 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
       }
       _password.clear();
       await _reload();
+      if (mounted && _success != null) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text(_success!)));
+      }
     } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
+      if (mounted) {
+        setState(() => _error = error.toString());
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text(_error!)));
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -78,13 +91,38 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
     await widget.controller.initialize();
     if (widget.controller.connected) {
       try {
-        _devices = await widget.controller.listDevices();
+        if (_hasAny(const {'devices:read', 'devices:manage'})) {
+          _devices = await widget.controller.listDevices();
+        }
+        if (_hasAny(const {
+          'access:read',
+          'roles.ver',
+          'roles.crear',
+          'roles.editar',
+        })) {
+          _permissions = await widget.controller.listAccessPermissions();
+          _roles = await widget.controller.listAccessRoles();
+        }
+        if (_hasAny(const {
+          'access:read',
+          'usuarios.ver',
+          'usuarios.crear',
+          'usuarios.editar',
+          'usuarios.eliminar',
+        })) {
+          _users = await widget.controller.listAccessUsers();
+        }
       } catch (error) {
         if (mounted) setState(() => _error = error.toString());
       }
     }
     await widget.syncCoordinator?.refreshStatus();
     if (mounted) setState(() {});
+  }
+
+  bool _hasAny(Set<String> permissions) {
+    final granted = widget.controller.session?.permissions ?? const <String>[];
+    return permissions.any(granted.contains);
   }
 
   @override
@@ -98,14 +136,7 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
             const LinearProgressIndicator(),
             const SizedBox(height: 16),
           ],
-          if (!widget.controller.enabled)
-            _disabled()
-          else if (!widget.controller.connected)
-            _authentication()
-          else
-            _connected(),
           if (_success != null) ...[
-            const SizedBox(height: 16),
             Semantics(
               liveRegion: true,
               child: Text(
@@ -116,7 +147,14 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
                 ),
               ),
             ),
+            const SizedBox(height: 16),
           ],
+          if (!widget.controller.enabled)
+            _disabled()
+          else if (!widget.controller.connected)
+            _authentication()
+          else
+            _connected(),
           const SizedBox(height: 16),
           _privacyAndDeletionLinks(),
           if (_error != null) ...[
@@ -219,6 +257,34 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
       ),
       const SizedBox(height: 16),
       _card(
+        title: 'Usuario del negocio',
+        icon: Icons.badge_outlined,
+        children: [
+          const Text(
+            'Activa una cuenta creada por un administrador o inicia sesión '
+            'con tu usuario central en este dispositivo autorizado.',
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _showAccessActivation,
+                icon: const Icon(Icons.key_outlined),
+                label: const Text('Activar usuario'),
+              ),
+              FilledButton.icon(
+                onPressed: _busy ? null : _showAccessLogin,
+                icon: const Icon(Icons.login_outlined),
+                label: const Text('Ingresar como usuario'),
+              ),
+            ],
+          ),
+        ],
+      ),
+      const SizedBox(height: 16),
+      _card(
         title: 'Vincular este dispositivo',
         icon: Icons.devices_other_outlined,
         children: [
@@ -266,11 +332,12 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
             spacing: 12,
             runSpacing: 12,
             children: [
-              FilledButton.icon(
-                onPressed: _busy ? null : _createCode,
-                icon: const Icon(Icons.add_link),
-                label: const Text('Generar código temporal'),
-              ),
+              if (_hasAny(const {'devices:manage'}))
+                FilledButton.icon(
+                  onPressed: _busy ? null : _createCode,
+                  icon: const Icon(Icons.add_link),
+                  label: const Text('Generar código temporal'),
+                ),
               OutlinedButton.icon(
                 onPressed: _busy ? null : () => _run(widget.controller.logout),
                 icon: const Icon(Icons.logout),
@@ -285,50 +352,403 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
         _synchronizationCard(),
         const SizedBox(height: 16),
       ],
-      _card(
-        title: 'Dispositivos autorizados',
-        icon: Icons.devices_outlined,
-        children: [
-          if (_devices.isEmpty)
-            const Text('No se pudieron cargar dispositivos.')
-          else
-            ..._devices.map(_deviceTile),
-        ],
-      ),
-      const SizedBox(height: 16),
-      _card(
-        title: 'Eliminar cuenta remota',
-        icon: Icons.delete_forever_outlined,
-        children: [
-          const Text(
-            'Elimina definitivamente la identidad, los dispositivos y los datos sincronizados del servidor. La base local de este dispositivo se conserva.',
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Antes de continuar, crea un respaldo si necesitas conservar una copia independiente.',
-          ),
-          const SizedBox(height: 16),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Semantics(
-              button: true,
-              label: 'Eliminar definitivamente la cuenta remota',
-              child: FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  backgroundColor: Theme.of(context).colorScheme.error,
-                  foregroundColor: Theme.of(context).colorScheme.onError,
-                  minimumSize: const Size(48, 48),
+      if (_hasAny(const {'devices:read', 'devices:manage'})) ...[
+        _card(
+          title: 'Dispositivos autorizados',
+          icon: Icons.devices_outlined,
+          children: [
+            if (_devices.isEmpty)
+              const Text('No se pudieron cargar dispositivos.')
+            else
+              ..._devices.map(_deviceTile),
+          ],
+        ),
+        const SizedBox(height: 16),
+      ],
+      if (_hasAny(const {
+        'access:read',
+        'roles.ver',
+        'roles.crear',
+        'roles.editar',
+        'usuarios.ver',
+        'usuarios.crear',
+        'usuarios.editar',
+        'usuarios.eliminar',
+      })) ...[
+        _accessControlCard(),
+        const SizedBox(height: 16),
+      ],
+      if (widget.controller.session!.userId == null)
+        _card(
+          title: 'Eliminar cuenta remota',
+          icon: Icons.delete_forever_outlined,
+          children: [
+            const Text(
+              'Elimina definitivamente la identidad, los dispositivos y los datos sincronizados del servidor. La base local de este dispositivo se conserva.',
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Antes de continuar, crea un respaldo si necesitas conservar una copia independiente.',
+            ),
+            const SizedBox(height: 16),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Semantics(
+                button: true,
+                label: 'Eliminar definitivamente la cuenta remota',
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.error,
+                    foregroundColor: Theme.of(context).colorScheme.onError,
+                    minimumSize: const Size(48, 48),
+                  ),
+                  onPressed: _busy ? null : _confirmDeleteAccount,
+                  icon: const Icon(Icons.delete_forever_outlined),
+                  label: const Text('Eliminar cuenta remota'),
                 ),
-                onPressed: _busy ? null : _confirmDeleteAccount,
-                icon: const Icon(Icons.delete_forever_outlined),
-                label: const Text('Eliminar cuenta remota'),
+              ),
+            ),
+          ],
+        ),
+    ],
+  );
+
+  Widget _accessControlCard() {
+    final canCreateRoles = _hasAny(const {'access:manage', 'roles.crear'});
+    final canEditRoles = _hasAny(const {'access:manage', 'roles.editar'});
+    final canCreateUsers = _hasAny(const {'access:manage', 'usuarios.crear'});
+    final canEditUsers = _hasAny(const {
+      'access:manage',
+      'usuarios.editar',
+      'usuarios.eliminar',
+    });
+    return _card(
+      title: 'Usuarios, roles y permisos',
+      icon: Icons.admin_panel_settings_outlined,
+      children: [
+        const Text(
+          'La configuración se guarda en el servidor central. Los usuarios '
+          'locales actuales continúan disponibles durante la migración.',
+        ),
+        if (canCreateRoles || canCreateUsers) ...[
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              if (canCreateRoles)
+                OutlinedButton.icon(
+                  onPressed: _busy ? null : () => _editRole(),
+                  icon: const Icon(Icons.add_moderator_outlined),
+                  label: const Text('Crear rol'),
+                ),
+              if (canCreateUsers)
+                FilledButton.icon(
+                  onPressed: _busy || _roles.isEmpty
+                      ? null
+                      : () => _editAccessUser(),
+                  icon: const Icon(Icons.person_add_alt_1_outlined),
+                  label: const Text('Crear usuario'),
+                ),
+            ],
+          ),
+        ],
+        const SizedBox(height: 20),
+        Text('Roles', style: Theme.of(context).textTheme.titleMedium),
+        if (_roles.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text('No hay roles disponibles.'),
+          )
+        else
+          ..._roles.map(
+            (role) => ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                role.system
+                    ? Icons.verified_user_outlined
+                    : Icons.badge_outlined,
+              ),
+              title: Text(role.name),
+              subtitle: Text(
+                '${role.roleType == 'administrator' ? 'Administrador' : 'Operativo'} · '
+                '${role.permissions.length} permisos · versión ${role.version}',
+              ),
+              trailing: !canEditRoles || role.system
+                  ? null
+                  : IconButton(
+                      tooltip: 'Editar ${role.name}',
+                      onPressed: _busy ? null : () => _editRole(role),
+                      icon: const Icon(Icons.edit_outlined),
+                    ),
+            ),
+          ),
+        const Divider(height: 32),
+        Text(
+          'Usuarios centrales',
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        if (_users.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text('No hay usuarios centrales.'),
+          )
+        else
+          ..._users.map(
+            (user) => ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                user.active ? Icons.person_outline : Icons.person_off_outlined,
+              ),
+              title: Text(user.name),
+              subtitle: Text(
+                [
+                  '@${user.username}',
+                  user.roles.map((role) => role.name).join(', '),
+                  user.activated ? 'Activado' : 'Pendiente de activación',
+                  if (!user.active) 'Inactivo',
+                ].join(' · '),
+              ),
+              trailing: !canEditUsers
+                  ? null
+                  : IconButton(
+                      tooltip: 'Editar ${user.name}',
+                      onPressed: _busy ? null : () => _editAccessUser(user),
+                      icon: const Icon(Icons.edit_outlined),
+                    ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _editRole([RemoteAccessRole? role]) async {
+    final name = TextEditingController(text: role?.name ?? '');
+    final selected = <String>{...?role?.permissions};
+    var roleType = role?.roleType ?? 'operational';
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(role == null ? 'Crear rol' : 'Editar rol'),
+          content: SizedBox(
+            width: 620,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: name,
+                  autofocus: true,
+                  onChanged: (_) => setDialogState(() {}),
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre del rol',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: roleType,
+                  decoration: const InputDecoration(labelText: 'Tipo de rol'),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'operational',
+                      child: Text('Operativo'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'administrator',
+                      child: Text('Administrador'),
+                    ),
+                  ],
+                  onChanged: (value) =>
+                      setDialogState(() => roleType = value ?? 'operational'),
+                ),
+                const SizedBox(height: 12),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final permission in _permissions)
+                        CheckboxListTile(
+                          dense: true,
+                          value: selected.contains(permission.key),
+                          title: Text(permission.description),
+                          subtitle: Text(permission.key),
+                          onChanged: (value) => setDialogState(() {
+                            if (value == true) {
+                              selected.add(permission.key);
+                            } else {
+                              selected.remove(permission.key);
+                            }
+                          }),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: name.text.trim().isEmpty || selected.isEmpty
+                  ? null
+                  : () => Navigator.pop(context, true),
+              child: const Text('Guardar'),
+            ),
+          ],
+        ),
+      ),
+    );
+    final value = name.text.trim();
+    name.dispose();
+    if (accepted != true) return;
+    await _run(() async {
+      await widget.controller.saveAccessRole(
+        id: role?.id,
+        name: value,
+        roleType: roleType,
+        permissions: selected.toList()..sort(),
+        expectedVersion: role?.version,
+      );
+      _success = role == null ? 'Rol creado.' : 'Rol actualizado.';
+    });
+  }
+
+  Future<void> _editAccessUser([RemoteAccessUser? user]) async {
+    final name = TextEditingController(text: user?.name ?? '');
+    final username = TextEditingController(text: user?.username ?? '');
+    final email = TextEditingController(text: user?.email ?? '');
+    final roleIds = <String>{...?(user?.roles.map((role) => role.id))};
+    var active = user?.active ?? true;
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(
+            user == null ? 'Crear usuario central' : 'Editar usuario central',
+          ),
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: name,
+                    decoration: const InputDecoration(labelText: 'Nombre'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: username,
+                    decoration: const InputDecoration(labelText: 'Usuario'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: email,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(
+                      labelText: 'Correo opcional',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  for (final role in _roles)
+                    CheckboxListTile(
+                      dense: true,
+                      value: roleIds.contains(role.id),
+                      title: Text(role.name),
+                      onChanged: (value) => setDialogState(() {
+                        if (value == true) {
+                          roleIds.add(role.id);
+                        } else {
+                          roleIds.remove(role.id);
+                        }
+                      }),
+                    ),
+                  if (user != null)
+                    SwitchListTile(
+                      value: active,
+                      title: const Text('Usuario activo'),
+                      onChanged: (value) =>
+                          setDialogState(() => active = value),
+                    ),
+                ],
               ),
             ),
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: roleIds.isEmpty
+                  ? null
+                  : () => Navigator.pop(context, true),
+              child: const Text('Guardar'),
+            ),
+          ],
+        ),
       ),
-    ],
-  );
+    );
+    final userName = name.text.trim();
+    final login = username.text.trim();
+    final mail = email.text.trim();
+    name.dispose();
+    username.dispose();
+    email.dispose();
+    if (accepted != true) return;
+    await _run(() async {
+      if (user == null) {
+        final created = await widget.controller.createAccessUser(
+          name: userName,
+          username: login,
+          email: mail,
+          roleIds: roleIds.toList(),
+        );
+        if (!mounted) return;
+        await showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            title: const Text('Código de activación'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Entrégalo de forma privada al usuario. Se muestra una sola vez.',
+                ),
+                const SizedBox(height: 16),
+                SelectableText(created.activationCode),
+                const SizedBox(height: 12),
+                Text(
+                  'Vence ${DateFormat('dd/MM/yyyy HH:mm').format(created.activationExpiresAt.toLocal())}.',
+                ),
+              ],
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Entendido'),
+              ),
+            ],
+          ),
+        );
+        _success = 'Usuario central creado y pendiente de activación.';
+      } else {
+        await widget.controller.updateAccessUser(
+          id: user.id,
+          name: userName,
+          username: login,
+          email: mail,
+          active: active,
+          roleIds: roleIds.toList(),
+        );
+        _success = 'Usuario central actualizado.';
+      }
+    });
+  }
 
   Widget _synchronizationCard() {
     final coordinator = widget.syncCoordinator!;
@@ -515,6 +935,128 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
         syncAfter: true,
       );
     }
+  }
+
+  Future<void> _showAccessActivation() async {
+    final username = TextEditingController();
+    final code = TextEditingController();
+    final password = TextEditingController();
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Activar usuario central'),
+        content: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: username,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'Usuario'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: code,
+                decoration: const InputDecoration(
+                  labelText: 'Código de activación',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: password,
+                obscureText: true,
+                enableSuggestions: false,
+                autocorrect: false,
+                decoration: const InputDecoration(
+                  labelText: 'Nueva contraseña central',
+                  helperText: 'Mínimo 12 caracteres.',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Activar'),
+          ),
+        ],
+      ),
+    );
+    final login = username.text;
+    final activationCode = code.text;
+    final newPassword = password.text;
+    username.dispose();
+    code.dispose();
+    password.dispose();
+    if (accepted != true) return;
+    await _run(() async {
+      await widget.controller.activateAccessUser(
+        username: login,
+        activationCode: activationCode,
+        password: newPassword,
+      );
+      _success = 'Usuario activado. Ya puedes iniciar sesión.';
+    });
+  }
+
+  Future<void> _showAccessLogin() async {
+    final username = TextEditingController();
+    final password = TextEditingController();
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Ingresar como usuario'),
+        content: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: username,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'Usuario'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: password,
+                obscureText: true,
+                enableSuggestions: false,
+                autocorrect: false,
+                decoration: const InputDecoration(
+                  labelText: 'Contraseña central',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Ingresar'),
+          ),
+        ],
+      ),
+    );
+    final login = username.text;
+    final secret = password.text;
+    username.dispose();
+    password.dispose();
+    if (accepted != true) return;
+    await _run(
+      () =>
+          widget.controller.loginAccessUser(username: login, password: secret),
+      syncAfter: true,
+    );
   }
 
   Future<void> _createCode() async {

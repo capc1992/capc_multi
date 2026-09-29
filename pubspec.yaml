@@ -1,7 +1,7 @@
 name: capc_multiservicio
 description: Aplicación de escritorio local de ventas e inventario para CAPC MULTISERVICIO.
 publish_to: none
-version: 0.4.0+7
+version: 0.4.1+8
 
 environment:
   sdk: '>=3.10.0 <4.0.0'

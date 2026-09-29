@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 import '../data/repository.dart';
+import '../sync/remote_identity.dart';
 import 'account_security.dart';
 
 class CapcAccessGate extends StatefulWidget {
   const CapcAccessGate({
     super.key,
     required this.repository,
+    required this.remoteIdentity,
     required this.builder,
   });
   final CapcRepository repository;
+  final RemoteIdentityController remoteIdentity;
   final Widget Function(VoidCallback onLogout) builder;
   @override
   State<CapcAccessGate> createState() => _AccessState();
@@ -21,9 +24,12 @@ class _AccessState extends State<CapcAccessGate> {
       _password = TextEditingController(),
       _confirmation = TextEditingController(),
       _recovery = TextEditingController();
+  final _activation = TextEditingController();
   bool? _setup;
   bool _reconfigure = false;
   bool _recovering = false;
+  bool _centralLogin = false;
+  bool _centralActivation = false;
   bool _created = false;
   bool _busy = false;
   String? _error;
@@ -33,7 +39,12 @@ class _AccessState extends State<CapcAccessGate> {
   @override
   void initState() {
     super.initState();
-    _check();
+    _initialize();
+  }
+
+  Future<void> _initialize() async {
+    await widget.remoteIdentity.initialize();
+    await _check();
   }
 
   Future<void> _check() async {
@@ -53,7 +64,14 @@ class _AccessState extends State<CapcAccessGate> {
 
   @override
   void dispose() {
-    for (final c in [_name, _username, _password, _confirmation, _recovery]) {
+    for (final c in [
+      _name,
+      _username,
+      _password,
+      _confirmation,
+      _recovery,
+      _activation,
+    ]) {
       c.dispose();
     }
     super.dispose();
@@ -115,6 +133,10 @@ class _AccessState extends State<CapcAccessGate> {
                               ? 'Crea el primer propietario'
                               : _recovering
                               ? 'Restablecer contraseña'
+                              : _centralActivation
+                              ? 'Activar usuario central'
+                              : _centralLogin
+                              ? 'Ingresar con usuario central'
                               : 'Ingresar a tu negocio',
                           style: Theme.of(context).textTheme.titleMedium,
                         ),
@@ -126,6 +148,10 @@ class _AccessState extends State<CapcAccessGate> {
                               ? 'Esta cuenta administrará los usuarios, la caja y tus datos. Elige tu propia contraseña (mínimo 10 caracteres).'
                               : _recovering
                               ? 'Escribe tu usuario y el código de recuperación que guardaste para elegir una contraseña nueva. El código se puede usar una sola vez.'
+                              : _centralActivation
+                              ? 'Usa el código entregado por un administrador. Esta cuenta quedará preparada para trabajar offline durante el periodo autorizado.'
+                              : _centralLogin
+                              ? 'Se validará con el servidor. Sin internet podrás entrar con una autorización firmada vigente guardada en este dispositivo.'
                               : 'Usuarios locales. Puedes iniciar sesión sin internet.',
                         ),
                         const SizedBox(height: 22),
@@ -178,6 +204,21 @@ class _AccessState extends State<CapcAccessGate> {
                           ),
                           const SizedBox(height: 18),
                         ],
+                        if (_centralActivation) ...[
+                          TextFormField(
+                            controller: _activation,
+                            enabled: !_busy,
+                            autocorrect: false,
+                            enableSuggestions: false,
+                            decoration: const InputDecoration(
+                              labelText: 'Código de activación',
+                            ),
+                            validator: (v) => v == null || v.trim().isEmpty
+                                ? 'Escribe el código de activación.'
+                                : null,
+                          ),
+                          const SizedBox(height: 18),
+                        ],
                         TextFormField(
                           key: const Key('access-password'),
                           controller: _password,
@@ -185,11 +226,14 @@ class _AccessState extends State<CapcAccessGate> {
                           obscureText: true,
                           autocorrect: false,
                           enableSuggestions: false,
-                          textInputAction: _setup == true || _recovering
+                          textInputAction:
+                              _setup == true ||
+                                  _recovering ||
+                                  _centralActivation
                               ? TextInputAction.next
                               : TextInputAction.done,
                           decoration: InputDecoration(
-                            labelText: _recovering
+                            labelText: _recovering || _centralActivation
                                 ? 'Nueva contraseña'
                                 : 'Contraseña',
                           ),
@@ -197,15 +241,22 @@ class _AccessState extends State<CapcAccessGate> {
                               ? 'Escribe tu contraseña.'
                               : (_setup == true || _recovering) && v.length < 10
                               ? 'Usa al menos 10 caracteres.'
+                              : _centralActivation && v.length < 12
+                              ? 'Usa al menos 12 caracteres.'
                               : null,
                           onFieldSubmitted: (_) {
-                            if (!_busy && _setup == false && !_recovering) {
+                            if (!_busy &&
+                                _setup == false &&
+                                !_recovering &&
+                                !_centralActivation) {
                               _submit();
                             }
                           },
                         ),
                         const SizedBox(height: 18),
-                        if (_setup == true || _recovering) ...[
+                        if (_setup == true ||
+                            _recovering ||
+                            _centralActivation) ...[
                           TextFormField(
                             controller: _confirmation,
                             enabled: !_busy,
@@ -249,19 +300,50 @@ class _AccessState extends State<CapcAccessGate> {
                                 ? 'Crear propietario'
                                 : _recovering
                                 ? 'Guardar nueva contraseña'
+                                : _centralActivation
+                                ? 'Activar e ingresar'
                                 : 'Ingresar',
                           ),
                         ),
                         if (_setup == false) ...[
                           const SizedBox(height: 8),
                           TextButton(
-                            onPressed: _busy ? null : _toggleRecovery,
+                            onPressed: _busy || _centralLogin
+                                ? null
+                                : _toggleRecovery,
                             child: Text(
                               _recovering
                                   ? 'Volver al ingreso'
                                   : 'Olvidé mi contraseña',
                             ),
                           ),
+                          if (widget.remoteIdentity.enabled) ...[
+                            const Divider(),
+                            OutlinedButton.icon(
+                              onPressed: _busy ? null : _toggleCentralLogin,
+                              icon: Icon(
+                                _centralLogin
+                                    ? Icons.person_outline
+                                    : Icons.cloud_outlined,
+                              ),
+                              label: Text(
+                                _centralLogin
+                                    ? 'Usar usuario local'
+                                    : 'Usar usuario central',
+                              ),
+                            ),
+                            if (_centralLogin)
+                              TextButton(
+                                onPressed: _busy
+                                    ? null
+                                    : _toggleCentralActivation,
+                                child: Text(
+                                  _centralActivation
+                                      ? 'Ya activé mi usuario'
+                                      : 'Activar usuario por primera vez',
+                                ),
+                              ),
+                          ],
                         ],
                         if (_recovering) ...[
                           const SizedBox(height: 12),
@@ -324,6 +406,30 @@ class _AccessState extends State<CapcAccessGate> {
             );
           }
         }
+      } else if (_centralActivation) {
+        await widget.remoteIdentity.activateAccessUser(
+          username: _username.text.trim(),
+          activationCode: _activation.text.trim(),
+          password: _password.text,
+        );
+        await widget.remoteIdentity.loginAccessUser(
+          username: _username.text.trim(),
+          password: _password.text,
+          authenticateLocally: true,
+        );
+      } else if (_centralLogin) {
+        try {
+          await widget.remoteIdentity.loginAccessUser(
+            username: _username.text.trim(),
+            password: _password.text,
+            authenticateLocally: true,
+          );
+        } catch (_) {
+          await widget.remoteIdentity.loginAccessUserOffline(
+            username: _username.text.trim(),
+            password: _password.text,
+          );
+        }
       } else if (_recovering) {
         await widget.repository.resetPasswordWithRecoveryCode(
           username: _username.text.trim(),
@@ -365,6 +471,33 @@ class _AccessState extends State<CapcAccessGate> {
       _recovery.clear();
       _error = null;
       _notice = null;
+    });
+  }
+
+  void _toggleCentralLogin() {
+    _form.currentState?.reset();
+    setState(() {
+      _centralLogin = !_centralLogin;
+      _centralActivation = false;
+      _recovering = false;
+      _activation.clear();
+      _password.clear();
+      _confirmation.clear();
+      _error = null;
+      _notice = null;
+    });
+  }
+
+  void _toggleCentralActivation() {
+    final username = _username.text;
+    _form.currentState?.reset();
+    setState(() {
+      _username.text = username;
+      _centralActivation = !_centralActivation;
+      _activation.clear();
+      _password.clear();
+      _confirmation.clear();
+      _error = null;
     });
   }
 

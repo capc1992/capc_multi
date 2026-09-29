@@ -1,6 +1,40 @@
 ﻿# Continuidad de CAPC MULTISERVICIO
 
-Actualizado el 27 de septiembre de 2026. Proyecto canónico: `C:\Users\CAPC\capc_multi`.
+Actualizado el 28 de septiembre de 2026. Proyecto canónico: `C:\Users\CAPC\capc_multi`.
+
+## Punto actual — núcleo Offline-First y multiusuario completado localmente
+
+Se completó el siguiente bloque de la migración multiusuario. El ingreso principal permite activar e iniciar sesión con usuarios centrales cuando `CAPC_SYNC_URL` está habilitada. Después del primer ingreso con internet, el dispositivo conserva solamente un verificador Argon2id y una concesión Ed25519 firmada, ligada a negocio, dispositivo, usuario, `security_version`, permisos y vencimiento máximo de 72 horas. No se guarda la contraseña en texto plano. Al vencer la concesión se exige renovar por internet.
+
+El tipo de rol sigue siendo configurable como `administrator` u `operational`. Ser administrador no concede permisos por sí solo: el repositorio verifica la clave granular exacta en cada lectura o escritura y la interfaz filtra navegación y acciones con esas mismas claves. Se añadieron permisos para clientes, proveedores, compras, cotizaciones, trabajos, caja, gastos, devoluciones, precios y respaldos. La administración central acepta `roles.*` y `usuarios.*` de forma individual, además de los permisos globales de compatibilidad del administrador principal.
+
+SQLite avanzó al esquema 8 con `central_auth_cache`; PostgreSQL añade la migración reversible `005_permission_catalog`. La concesión firmada incorpora nombre, usuario y tipo de rol. El administrador principal del sistema continúa protegido y recibe el catálogo completo; los roles administradores personalizados reciben únicamente los permisos seleccionados.
+
+Se completaron además la renovación automática de autorización central, la auditoría central combinada de seguridad y operaciones, la bandeja durable de conflictos con permisos `conflictos.ver`/`conflictos.resolver`, los controles granulares de interfaz y la protección contra colisiones de consecutivos creados offline. Marcar un conflicto como revisado conserva toda su evidencia; los hechos financieros se corrigen mediante operaciones compensatorias.
+
+Verificación de este bloque: formato y `flutter analyze --no-pub` limpios; **206 pruebas Flutter** aprobadas; 6 pruebas Python aprobadas; typecheck y build TypeScript correctos; **26 pruebas del servidor** aprobadas y 8 pruebas PostgreSQL preparadas pero omitidas localmente por falta de `DATABASE_URL`. Compilaron correctamente Windows release y Android debug. La matriz está en `docs/VALIDACION-OFFLINE-FIRST.md`. No se ejecutaron las migraciones 004/005 contra PostgreSQL real, no se realizó el piloto físico y no se desplegó el servidor.
+
+## Punto de pausa — stock y Centro de actualizaciones (28 de septiembre)
+
+El usuario pidió guardar el proyecto y continuar después. No continuar con despliegues ni instalaciones durante esta pausa. Los cambios están guardados localmente, sin commit ni push realizados por el agente en este tramo.
+
+**Solicitud pendiente:** corregir que el segundo dispositivo recibe el catálogo pero muestra stock cero, y entregar la corrección mediante **Abrir Centro de actualizaciones**. La corrección local está preparada; la entrega por ese botón aún está bloqueada.
+
+**Estado comprobado con el usuario:** creación de empresa en el VPS respondió HTTP 201; el usuario confirmó posteriormente la eliminación de prueba. El primer equipo mostró conexión remota y sincronización. El segundo recibió artículos, pero no sus existencias iniciales. No confundir estos reportes con una verificación completa del inventario en producción.
+
+**Corrección anterior incluida:** `RemoteIdentityController` enviaba `Content-Type: application/json` sin cuerpo al generar código temporal y cerrar sesión; Fastify rechazaba la petición. Ahora solo se declara JSON cuando hay cuerpo, y los errores de acciones remotas aparecen también en un aviso visible. Se generó el instalador 0.4.0+7 corregido. Pruebas de ese tramo: 9 Flutter y 13 del servidor, análisis y compilación correctos.
+
+**Corrección de stock, versión 0.4.1+8:** `lib/data/repository.dart` encola cada movimiento de tipo `Inicial` como `stock.adjusted` con su ID original. `lib/sync/local_sync_store.dart` recupera, antes del envío, las entradas iniciales de ese dispositivo que versiones anteriores no encolaron. Reconstruye cantidad y valor desde movimientos cuando llega una entrada inicial atrasada, teniendo en cuenta salidas que quedaron en conflicto; resuelve únicamente los saldos consistentes. También repara un receptor actualizado después de recibir la entrada con una versión anterior. No se cambió el esquema SQLite ni el protocolo del servidor. No se tocaron las bases reales.
+
+**Verificación más reciente:** 39 pruebas aprobadas de `sync_initial_stock_test.dart`, `sync_foundation_test.dart`, `core_ledger_test.dart`, `update_test.dart` y `update_page_test.dart`; `flutter analyze --no-pub` sin observaciones; Windows release compilado. Las pruebas nuevas cubren stock/costo, recuperación de datos omitidos, reintentos, salidas anteriores, receptor actualizado tarde, importación, ejemplos, paginación y servicios sin stock. No se ejecutó PostgreSQL real localmente.
+
+**Artefactos locales, NO publicados:** `dist/CAPC-MULTISERVICIO-Setup-0.4.1.exe` (16.395.223 bytes, SHA-256 `42C248C6870740EDB1273B514765BEB7EFDE6E9D2095744A825ED4022DF7301B`, sin firma) y `dist/latest-stock-0.4.1.draft.json` (formato validado). La compilación contiene la URL de sincronización y canal estable, pero no editor de firma. Es un candidato local, no una actualización instalable desde el botón. No indicar al usuario que la corrección ya está instalada.
+
+**Bloqueo del Centro de actualizaciones:** la comprobación pública del dominio `updates.capcmultiservicios.site` falló por DNS. Además, el cliente 0.4.0+7 instalado se compiló sin `CAPC_WINDOWS_UPDATE_PUBLISHER`; ese valor no se puede introducir mediante `latest.json` ni una variable del sistema. El verificador rechaza cualquier actualización con editor vacío. Se conservan las comprobaciones de firma, HTTPS, dominio, tamaño y SHA-256. Se necesita configurar DNS/HTTPS, disponer de firma confiable y hacer una instalación inicial del cliente con el editor configurado. La última pregunta al usuario fue si acepta esa instalación inicial para habilitar las siguientes desde el Centro; **no respondió con autorización: pidió pausar**.
+
+**Al retomar:** explicar brevemente ese bloqueo y resolver el método de habilitación antes de publicar o instalar. El usuario opera el VPS manualmente; mantener la restricción de no acceder por SSH. El workflow de publicación ahora conserva `CAPC_SYNC_URL` en Windows y Android; exige una versión superior a `pubspec.yaml` y publica ambas plataformas. Consultar `docs/ACTUALIZACION-STOCK-0.4.1.md` para los pasos de firma/publicación y validación en equipos. No publicar el manifiesto borrador: hay que recompilar con editor, firmar y regenerar tamaño/hash. No compensar el stock omitido con ajustes manuales en el segundo equipo.
+
+Para la prueba del segundo equipo se indicó `CAPC_DATA_DIR` con un directorio de prueba separado. El acceso directo normal puede abrir su base anterior; no borrar bases ni restablecer usuarios para cambiar de perfil. El usuario creó credenciales locales, pero las olvidó durante la prueba. No hay contraseña predeterminada ni credenciales de usuario guardadas en esta continuidad.
 
 ## Actualizaciones multiplataforma — `feature/cross-platform-updates`
 

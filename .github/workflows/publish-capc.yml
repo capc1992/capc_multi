@@ -107,6 +107,7 @@ jobs:
         shell: pwsh
         run: >-
           flutter build windows --release --no-pub
+          --dart-define=CAPC_SYNC_URL=https://api.capcmultiservicios.site
           --dart-define=CAPC_UPDATE_CHANNEL=${{ inputs.channel }}
           --dart-define=CAPC_WINDOWS_UPDATE_PUBLISHER="$env:WINDOWS_EXPECTED_PUBLISHER"
       - name: Comprobar secretos de firma
@@ -207,6 +208,7 @@ jobs:
       - name: Compilar Android para el canal elegido
         run: >-
           flutter build appbundle --release --no-pub
+          --dart-define=CAPC_SYNC_URL=https://api.capcmultiservicios.site
           --dart-define=CAPC_UPDATE_CHANNEL=${{ inputs.channel }}
       - uses: actions/upload-artifact@v4
         with:
