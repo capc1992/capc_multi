@@ -2,6 +2,29 @@
 
 Actualizado el 28 de septiembre de 2026. Proyecto canónico: `C:\Users\CAPC\capc_multi`.
 
+## Próxima continuación — piloto aislado y VPS
+
+El desarrollo local quedó guardado y publicado en la rama `feature/cross-platform-updates`. Antes de instalar una versión definitiva se debe ejecutar un piloto aislado. No desinstalar las versiones Windows existentes: cerrar CAPC, crear un respaldo y usar otra carpeta mediante `CAPC_DATA_DIR`. No alternar versiones antiguas y nuevas sobre la misma base SQLite. `ABRIR_CAPC.cmd` todavía abre el paquete 0.4.0 y el instalador local 0.4.1 es un candidato anterior sin firma; ninguno debe presentarse como la entrega final multiusuario.
+
+Pasos pendientes, en orden:
+
+1. Confirmar en GitHub Actions que el workflow `Cloud Sync Identity` del commit publicado termina completamente verde.
+2. Crear un entorno piloto separado en el VPS: subdominio como `api-test.capcmultiservicios.site`, puerto interno 3101, base y usuario PostgreSQL exclusivos `capc_sync_pilot`, configuración raíz en `/etc/capc-sync-pilot/capc-sync.env` y proceso PM2 `capc-sync-pilot`.
+3. No ejecutar todavía `deploy/vps/deploy-production.sh`, porque apunta al servicio y Nginx de producción. No usar la base del negocio para el piloto.
+4. Mantener `AUTH_TOKEN_PEPPER` y la contraseña PostgreSQL fuera del repositorio y del chat; el archivo de entorno debe tener modo 0600. Solo Nginx por HTTPS debe quedar público, nunca PostgreSQL ni el puerto 3101.
+5. En el servidor piloto ejecutar `npm ci --include=dev`, `npm run check`, `npm test`, `npm run build` y `npm run migrate` dos veces. Verificar que `schema_migrations` contenga 001–005.
+6. `npm run test:postgres` limpia tablas y solo puede ejecutarse contra una base desechable. GitHub Actions ya prepara una para esta prueba. No ejecutarlo en la base piloto después de comenzar las pruebas ni en producción.
+7. Configurar Nginx y TLS para el subdominio piloto, iniciar el servidor como un proceso PM2 distinto y comprobar tanto `http://127.0.0.1:3101/health` como la ruta HTTPS pública.
+8. Crear un respaldo `pg_dump --format=custom` del piloto y ensayar su restauración en otra base desechable.
+9. Compilar Windows y Android con `--dart-define=CAPC_SYNC_URL=https://api-test.capcmultiservicios.site`. Distribuir la carpeta Windows completa; el EXE solo no funciona. El APK debug es únicamente para dispositivos de prueba.
+10. Usar dos equipos o usuarios Windows diferentes y un Android, todos con datos ficticios. Las credenciales remotas de Windows se guardan en Credential Manager, por lo que dos bases `CAPC_DATA_DIR` bajo el mismo usuario no aíslan esas credenciales.
+11. Crear el negocio en el primer equipo y vincular los demás con códigos temporales; nunca copiar SQLite entre dispositivos.
+12. Ejecutar la matriz de `docs/VALIDACION-OFFLINE-FIRST.md`: conexión/desconexión, cierre antes de sincronizar, respuesta perdida, operaciones concurrentes, mismo registro, mismos consecutivos, soft delete, permisos, cambio de permisos offline, auditoría y conflictos.
+13. Aprobar el piloto únicamente si no se pierden IDs ni eventos, el inventario se explica por movimientos, los negocios quedan aislados y el respaldo se restaura correctamente.
+14. Solo después del piloto: respaldo y restauración ensayada de producción, migraciones 001–005, comprobación `/health`, habilitación gradual por negocio y aplicaciones firmadas. Nunca ejecutar pruebas destructivas ni `migrate:rollback` sobre producción.
+
+Comandos y criterios completos: `server/README.md` y `docs/VALIDACION-OFFLINE-FIRST.md`. El push del código no equivale a despliegue; en esta pausa no se accedió ni modificó el VPS.
+
 ## Punto actual — núcleo Offline-First y multiusuario completado localmente
 
 Se completó el siguiente bloque de la migración multiusuario. El ingreso principal permite activar e iniciar sesión con usuarios centrales cuando `CAPC_SYNC_URL` está habilitada. Después del primer ingreso con internet, el dispositivo conserva solamente un verificador Argon2id y una concesión Ed25519 firmada, ligada a negocio, dispositivo, usuario, `security_version`, permisos y vencimiento máximo de 72 horas. No se guarda la contraseña en texto plano. Al vencer la concesión se exige renovar por internet.
