@@ -34,3 +34,23 @@ Nginx publica el servicio mediante los puertos 80/443.
 
 La contrasena root compartida durante la operacion debe cambiarse desde un canal
 seguro. No se guardo en el repositorio ni en archivos del piloto.
+
+## Pausa del 9 de octubre de 2026
+
+El usuario pidio pausar antes de compilar los clientes del piloto. Se interrumpio
+el comando local de analisis/pruebas antes de recibir su resultado. No se inicio
+la compilacion de Windows ni Android y no se instalaron clientes en los equipos.
+
+Al continuar:
+
+1. Ejecutar `flutter analyze --no-pub` y `flutter test --no-pub`.
+2. Compilar Windows release con
+   `CAPC_SYNC_URL=https://api-test.capcmultiservicios.site`.
+3. Compilar el APK Android debug con la misma URL.
+4. Crear artefactos identificados expresamente como piloto sin reemplazar el
+   lanzador normal ni instalar sobre las bases reales.
+5. Probar con `CAPC_DATA_DIR` aislado, datos ficticios y la matriz de
+   `docs/VALIDACION-OFFLINE-FIRST.md`.
+
+La rotacion de la contrasena root compartida sigue siendo una tarea urgente y no
+debe posponerse al comenzar la proxima sesion.
