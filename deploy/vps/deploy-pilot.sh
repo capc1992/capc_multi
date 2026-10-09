@@ -5,6 +5,7 @@ umask 077
 readonly domain="${CAPC_PILOT_DOMAIN:-api-test.capcmultiservicios.site}"
 readonly expected_ip="${CAPC_EXPECTED_IP:-2.25.80.190}"
 readonly certificate_email="${CAPC_CERT_EMAIL:-nicolasperdomoliz@gmail.com}"
+readonly publish_public="${CAPC_PILOT_PUBLISH_PUBLIC:-true}"
 readonly canonical_repository="${CAPC_PILOT_REPOSITORY_DIR:-/opt/capc-sync-pilot/repository}"
 readonly script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly repository_dir="$(cd -- "${script_dir}/../.." && pwd)"
@@ -27,6 +28,11 @@ trap 'echo "ERROR: el despliegue piloto se detuvo en la linea ${LINENO}." >&2' E
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo 'Ejecuta este archivo como root.' >&2
+  exit 1
+fi
+
+if [[ "$publish_public" != 'true' && "$publish_public" != 'false' ]]; then
+  echo 'CAPC_PILOT_PUBLISH_PUBLIC debe ser true o false.' >&2
   exit 1
 fi
 
@@ -60,11 +66,13 @@ if [[ "$(node --version | sed 's/^v//' | cut -d. -f1)" -lt 22 ]]; then
   exit 1
 fi
 
-resolved_ips="$(getent ahostsv4 "$domain" | awk '{print $1}' | sort -u || true)"
-if ! grep -Fxq "$expected_ip" <<<"$resolved_ips"; then
-  echo "$domain todavia no resuelve hacia $expected_ip." >&2
-  echo 'Configura primero el registro DNS tipo A y espera su propagacion.' >&2
-  exit 1
+if [[ "$publish_public" == 'true' ]]; then
+  resolved_ips="$(getent ahostsv4 "$domain" | awk '{print $1}' | sort -u || true)"
+  if ! grep -Fxq "$expected_ip" <<<"$resolved_ips"; then
+    echo "$domain todavia no resuelve hacia $expected_ip." >&2
+    echo 'Configura primero el registro DNS tipo A y espera su propagacion.' >&2
+    exit 1
+  fi
 fi
 
 if ! systemctl is-active --quiet postgresql || ! systemctl is-active --quiet nginx; then
@@ -149,18 +157,20 @@ done
 curl --fail --silent --show-error http://127.0.0.1:3101/health
 echo
 
-install -o root -g root -m 0644 "$nginx_source" "$nginx_site"
-ln -sfn "$nginx_site" /etc/nginx/sites-enabled/api-test.capcmultiservicios.site.conf
-nginx -t
-systemctl reload nginx
+if [[ "$publish_public" == 'true' ]]; then
+  install -o root -g root -m 0644 "$nginx_source" "$nginx_site"
+  ln -sfn "$nginx_site" /etc/nginx/sites-enabled/api-test.capcmultiservicios.site.conf
+  nginx -t
+  systemctl reload nginx
 
-certbot --nginx \
-  --non-interactive \
-  --agree-tos \
-  --no-eff-email \
-  --redirect \
-  --email "$certificate_email" \
-  --domains "$domain"
+  certbot --nginx \
+    --non-interactive \
+    --agree-tos \
+    --no-eff-email \
+    --redirect \
+    --email "$certificate_email" \
+    --domains "$domain"
+fi
 
 install -o root -g root -m 0750 "$backup_script_source" "$backup_script_target"
 printf '%s\n' '40 3 * * * root /usr/local/sbin/capc-sync-pilot-backup >> /var/log/capc-sync-pilot-backup.log 2>&1' \
@@ -188,9 +198,15 @@ fi
 runuser -u postgres -- dropdb "$restore_database"
 restore_database=''
 
-curl --fail --silent --show-error "https://${domain}/health"
-echo
+if [[ "$publish_public" == 'true' ]]; then
+  curl --fail --silent --show-error "https://${domain}/health"
+  echo
+fi
 
 echo 'Piloto CAPC desplegado y restauracion de respaldo verificada.'
-echo "API piloto: https://${domain}"
+if [[ "$publish_public" == 'true' ]]; then
+  echo "API piloto: https://${domain}"
+else
+  echo 'API piloto disponible solo en http://127.0.0.1:3101 hasta configurar DNS y TLS.'
+fi
 echo 'Produccion no fue modificada.'

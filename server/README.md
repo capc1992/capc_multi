@@ -102,6 +102,15 @@ chmod +x deploy/vps/deploy-pilot.sh deploy/vps/capc-sync-pilot-backup.sh
 sudo ./deploy/vps/deploy-pilot.sh
 ```
 
+Si el DNS aun no existe, se puede completar primero la instalacion privada. Esta
+modalidad no crea configuracion Nginx ni solicita certificado TLS:
+
+```bash
+sudo CAPC_PILOT_PUBLISH_PUBLIC=false ./deploy/vps/deploy-pilot.sh
+```
+
+Una vez propagado el DNS, ejecutar el comando normal para habilitar HTTPS.
+
 El script exige las dependencias ya instaladas, ejecuta typecheck, pruebas
 unitarias, build y migraciones dos veces, comprueba las versiones 001-005,
 publica solamente mediante Nginx/HTTPS y ensaya la restauracion del respaldo en
