@@ -1,10 +1,15 @@
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
 
 import '../data/models.dart';
+import '../platform/platform_services.dart';
+
+const _pdfDocumentType = DocumentType(
+  label: 'Documento PDF',
+  extensions: ['pdf'],
+  mimeType: 'application/pdf',
+);
 
 /// A period is a pair of inclusive civil dates in Bogotá, independent of the
 /// Windows time zone. Balances are current balances, not historical balances.
@@ -71,12 +76,10 @@ class CapcDocuments {
 
   static Future<void> printSale(Sale sale, {bool ticket = false}) async {
     final bytes = await buildSale(sale, ticket: ticket);
-    await Printing.layoutPdf(
+    await appPlatform.printPdf(
+      bytes: bytes,
       name: 'CAPC ${sale.number}',
       format: ticket ? _ticketFormat : PdfPageFormat.letter,
-      dynamicLayout: false,
-      windowsModernDialog: true,
-      onLayout: (_) async => bytes,
     );
   }
 
@@ -95,12 +98,10 @@ class CapcDocuments {
     DateTime to,
   ) async {
     final bytes = await buildReport(sales, payments, from, to);
-    await Printing.layoutPdf(
+    await appPlatform.printPdf(
+      bytes: bytes,
       name: 'CAPC Reporte ${_isoDay(from)} a ${_isoDay(to)}',
       format: PdfPageFormat.letter,
-      dynamicLayout: false,
-      windowsModernDialog: true,
-      onLayout: (_) async => bytes,
     );
   }
 
@@ -115,17 +116,12 @@ class CapcDocuments {
   }
 
   static Future<bool> _save(Uint8List bytes, String name) async {
-    final destination = await getSaveLocation(
-      acceptedTypeGroups: const [
-        XTypeGroup(label: 'Documento PDF', extensions: ['pdf']),
-      ],
+    final saved = await appPlatform.saveDocument(
+      buildBytes: () async => bytes,
       suggestedName: name,
-      confirmButtonText: 'Guardar PDF',
+      type: _pdfDocumentType,
     );
-    if (destination == null) return false;
-    final file = XFile.fromData(bytes, name: name, mimeType: 'application/pdf');
-    await file.saveTo(destination.path);
-    return true;
+    return saved != null;
   }
 
   static Future<pw.ThemeData> _theme() async {

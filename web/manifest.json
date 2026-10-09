@@ -1,11 +1,11 @@
 {
-    "name": "capc_multi",
-    "short_name": "capc_multi",
+    "name": "CAPC MULTISERVICIO",
+    "short_name": "CAPC",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#142638",
+    "theme_color": "#142638",
+    "description": "Ventas, inventario, compras, cotizaciones y cartera para CAPC MULTISERVICIO.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
