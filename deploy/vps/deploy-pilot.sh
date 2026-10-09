@@ -67,7 +67,12 @@ if [[ "$(node --version | sed 's/^v//' | cut -d. -f1)" -lt 22 ]]; then
 fi
 
 if [[ "$publish_public" == 'true' ]]; then
-  resolved_ips="$(getent ahostsv4 "$domain" | awk '{print $1}' | sort -u || true)"
+  resolved_ips="$({
+    getent ahostsv4 "$domain" || true
+    if command -v dig >/dev/null; then
+      dig +short @1.1.1.1 "$domain" A || true
+    fi
+  } | awk '{print $1}' | sort -u)"
   if ! grep -Fxq "$expected_ip" <<<"$resolved_ips"; then
     echo "$domain todavia no resuelve hacia $expected_ip." >&2
     echo 'Configura primero el registro DNS tipo A y espera su propagacion.' >&2
@@ -200,7 +205,9 @@ runuser -u postgres -- dropdb "$restore_database"
 restore_database=''
 
 if [[ "$publish_public" == 'true' ]]; then
-  curl --fail --silent --show-error "https://${domain}/health"
+  curl --fail --silent --show-error \
+    --resolve "${domain}:443:${expected_ip}" \
+    "https://${domain}/health"
   echo
 fi
 
