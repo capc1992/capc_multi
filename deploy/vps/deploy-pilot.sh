@@ -132,7 +132,8 @@ cd "$server_dir"
 npm ci --include=dev
 npm audit --omit=dev --audit-level=high
 npm run check
-npm test
+# Sin DATABASE_URL, Vitest omite la suite PostgreSQL que limpia tablas.
+env -u DATABASE_URL npm test
 npm run build
 npm run migrate
 npm run migrate
