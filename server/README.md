@@ -87,4 +87,25 @@ chmod +x deploy/vps/deploy-production.sh deploy/vps/capc-sync-backup.sh
 ./deploy/vps/deploy-production.sh
 ```
 
+## Despliegue del piloto aislado
+
+El piloto usa un clon separado en `/opt/capc-sync-pilot/repository`, la base y el
+usuario `capc_sync_pilot`, el proceso PM2 `capc-sync-pilot`, el puerto local 3101
+y el subdominio `api-test.capcmultiservicios.site`. No modifica el proceso, la
+base ni la configuracion Nginx de produccion.
+
+Despues de crear el registro DNS tipo A y clonar esta rama en la ruta indicada:
+
+```bash
+cd /opt/capc-sync-pilot/repository
+chmod +x deploy/vps/deploy-pilot.sh deploy/vps/capc-sync-pilot-backup.sh
+sudo ./deploy/vps/deploy-pilot.sh
+```
+
+El script exige las dependencias ya instaladas, ejecuta typecheck, pruebas
+unitarias, build y migraciones dos veces, comprueba las versiones 001-005,
+publica solamente mediante Nginx/HTTPS y ensaya la restauracion del respaldo en
+una base temporal. Deliberadamente no ejecuta `npm run test:postgres`, porque
+esa prueba limpia tablas y queda reservada para GitHub Actions o bases desechables.
+
 El instalador conserva `/etc/capc-sync/capc-sync.env` cuando ya existe. Configura PostgreSQL, migraciones, compilación, PM2, Nginx, certificado TLS, respaldo diario con retención local de 14 días y comprueba las tres rutas HTTPS públicas. Nunca muestra ni guarda secretos dentro del repositorio.
