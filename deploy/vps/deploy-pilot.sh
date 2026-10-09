@@ -145,7 +145,7 @@ if [[ "$migration_versions" != '1,2,3,4,5' ]]; then
   exit 1
 fi
 
-npm prune --omit=dev
+npm prune --omit=dev --package-lock=false
 pm2 startOrReload ecosystem.pilot.config.cjs --only capc-sync-pilot --update-env
 pm2 save
 
