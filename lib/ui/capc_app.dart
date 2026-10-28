@@ -517,11 +517,20 @@ class _CapcHomeState extends State<_CapcHome> {
                                 onPressed:
                                     _busy ||
                                         _loading ||
-                                        !widget.remoteIdentity.connected ||
                                         (widget.syncCoordinator?.running ??
                                             false)
                                     ? null
-                                    : () => _run(_syncNow),
+                                    : widget.remoteIdentity.connected
+                                    ? () => _run(_syncNow)
+                                    : () => Navigator.of(context).push(
+                                        MaterialPageRoute<void>(
+                                          builder: (_) => RemoteIdentityPage(
+                                            controller: widget.remoteIdentity,
+                                            syncCoordinator:
+                                                widget.syncCoordinator,
+                                          ),
+                                        ),
+                                      ),
                                 icon: widget.syncCoordinator?.running ?? false
                                     ? const SizedBox.square(
                                         dimension: 20,

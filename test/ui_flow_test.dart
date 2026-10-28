@@ -5,6 +5,10 @@ import 'dart:ui' as ui;
 import 'package:capc_multiservicio/data/repository.dart';
 import 'package:capc_multiservicio/platform/platform_android.dart';
 import 'package:capc_multiservicio/platform/platform_services.dart';
+import 'package:capc_multiservicio/sync/remote_identity.dart';
+import 'package:capc_multiservicio/sync/secure_credentials.dart';
+import 'package:capc_multiservicio/sync/sync_coordinator.dart';
+import 'package:capc_multiservicio/sync/sync_transport.dart';
 import 'package:capc_multiservicio/ui/capc_app.dart';
 import 'package:capc_multiservicio/ui/line_editor.dart';
 import 'package:capc_multiservicio/ui/ui_shared.dart';
@@ -104,6 +108,45 @@ Future<CapcRepository> openTestApp(WidgetTester tester, Size size) async {
 
 void main() {
   WidgetController.hitTestWarningShouldBeFatal = true;
+  testWidgets('acceso superior abre conexión remota antes de vincularse', (
+    tester,
+  ) async {
+    final repository = await openTestApp(tester, const Size(1400, 900));
+    final identity = RemoteIdentityController(
+      repository: repository,
+      credentials: MemoryCredentialStore(),
+      configuration: SyncConfiguration(
+        baseUri: Uri.parse('https://api-test.example.test'),
+      ),
+    );
+    final coordinator = SyncCoordinator(
+      repository: repository,
+      identity: identity,
+      retryInterval: const Duration(days: 1),
+    );
+    addTearDown(coordinator.dispose);
+    await tester.pumpWidget(
+      CapcApp(
+        repository: repository,
+        remoteIdentity: identity,
+        syncCoordinator: coordinator,
+      ),
+    );
+    await databaseFrames(tester);
+
+    expect(
+      find.byTooltip('Conecta el negocio para sincronizar'),
+      findsOneWidget,
+    );
+    final connect = find.widgetWithIcon(IconButton, Icons.cloud_sync_outlined);
+    expect(connect, findsOneWidget);
+    expect(tester.widget<IconButton>(connect).onPressed, isNotNull);
+    await tester.tap(connect);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Conectar este negocio'), findsOneWidget);
+  });
+
   testWidgets('Formulario bloquea doble guardado antes de reconstruirse', (
     tester,
   ) async {

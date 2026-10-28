@@ -132,3 +132,27 @@ Se completaron las validaciones que habian quedado pendientes durante la pausa:
 No fue necesario recompilar ni reemplazar el paquete. Tampoco se extrajo,
 instalo, ejecuto, publico ni copio a equipos reales. El siguiente hito sigue
 siendo el piloto fisico descrito en la seccion anterior.
+
+## Inicio del piloto fisico del 28 de octubre de 2026
+
+- Los commits `be719f5` y `76f7600` se publicaron en
+  `feature/cross-platform-updates`; el workflow `Cloud Sync Identity` aprobo
+  PostgreSQL, Windows y Android para `76f7600`.
+- Se corrigieron las alertas de dependencias de produccion que bloquearon el
+  primer intento de CI. `npm audit --omit=dev` termino con cero
+  vulnerabilidades.
+- El ZIP auditado se extrajo en una carpeta nueva del Escritorio y se abrio
+  exclusivamente mediante `ABRIR-CAPC-PILOTO.cmd`.
+- La base creada quedo dentro de `DATOS-PILOTO`; la ubicacion normal de datos no
+  recibio modificaciones durante la apertura.
+- Se creo el propietario local ficticio y se comprobo el ingreso posterior.
+  Todavia no se creo el negocio remoto ni se vinculo el segundo equipo.
+- La prueba manual descubrio que el acceso superior con el texto
+  `Conecta el negocio para sincronizar` estaba deshabilitado antes de conectar.
+  La ruta `Configuracion > Conexion remota y dispositivos` sigue disponible.
+  Se preparo una correccion con regresion automatizada; debe validarse,
+  recompilarse y generar un paquete piloto nuevo antes de continuar la prueba
+  fisica.
+
+No se usaron datos reales, no se copio el paquete al equipo del local y no se
+instalo el APK Android.
