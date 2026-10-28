@@ -219,3 +219,20 @@ instalo el APK Android.
   desarrollo -> Android y Android -> servidor -> ambos Windows.
 - El siguiente escenario es la operacion controlada sin Internet y posterior
   reconexion, aun exclusivamente con datos ficticios.
+
+## Correccion del consecutivo de ventas detectada en el piloto
+
+- Al intentar la segunda venta desde el Windows del local, conectado u
+  offline, aparecio `Ya existe un registro con ese codigo o identificador`.
+- La causa fue un contador local de ventas desactualizado: el equipo habia
+  recibido `V-000001` desde Android, pero su contador seguia en cero e intentaba
+  crear nuevamente `V-000001`.
+- La creacion de ventas ahora toma el mayor valor entre el contador y las
+  secuencias ya almacenadas, avanza hasta un numero libre y actualiza el
+  contador dentro de la misma transaccion.
+- La recepcion de una venta remota tambien adelanta el contador local. Se
+  agrego una regresion que recibe `V-000001` y crea `V-000002`, manteniendo la
+  cobertura de dos ventas offline simultaneas con el mismo numero inicial.
+- `flutter analyze --no-pub` termino limpio, las 13 pruebas de sincronizacion y
+  la suite completa de 209 pruebas aprobaron. Los clientes instalados aun deben
+  actualizarse con una compilacion nueva antes de reanudar el piloto offline.

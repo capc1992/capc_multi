@@ -1311,6 +1311,7 @@ extension CapcSyncStore on CapcRepository {
         'SELECT COALESCE(MAX(sequence),0)+1 AS next FROM sales WHERE business_id=?',
         [businessId],
       );
+      final localSequence = sequenceRows.single['next'] as int;
       await txn.insert('sales', {
         ...sale,
         'number': await _collisionSafeNumber(
@@ -1320,9 +1321,13 @@ extension CapcSyncStore on CapcRepository {
           saleId,
           operation.deviceId,
         ),
-        'sequence': sequenceRows.single['next'],
+        'sequence': localSequence,
         'business_id': businessId,
       });
+      await txn.rawUpdate(
+        "UPDATE counters SET value=MAX(value,?) WHERE name='sale'",
+        [localSequence],
+      );
       for (final line in saleLines) {
         await txn.insert('sale_lines', {...line, 'business_id': businessId});
       }

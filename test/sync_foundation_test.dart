@@ -725,6 +725,72 @@ void main() {
   );
 
   test(
+    'venta recibida adelanta el consecutivo antes de crear otra venta local',
+    () async {
+      final source = await openOwned(
+        p.join(directory.path, 'sequence-source.sqlite3'),
+      );
+      final target = await openOwned(
+        p.join(directory.path, 'sequence-target.sqlite3'),
+      );
+      addTearDown(source.close);
+      addTearDown(target.close);
+      await target.adoptRemoteBusinessId(source.businessId);
+      const serviceId = '77777777-7777-4777-8777-777777777777';
+      await source.saveProduct(
+        const Product(
+          id: serviceId,
+          code: 'SYNC-001',
+          name: 'Servicio sincronizado',
+          unit: 'Unidad',
+          isService: true,
+          purchasePrice: 0,
+          salePrice: 2000,
+          stock: 0,
+          minimumStock: 0,
+        ),
+      );
+      final transport = MemoryTransport();
+      final configuration = SyncConfiguration(
+        baseUri: Uri.parse('http://localhost'),
+      );
+      SyncEngine engine(CapcRepository repository) => SyncEngine(
+        repository: repository,
+        configuration: configuration,
+        transport: transport,
+      );
+      await engine(source).runOnce();
+      await engine(target).runOnce();
+      await source.openCash(
+        0,
+        operationId: 'dddddddd-dddd-4ddd-8ddd-ddddddddddde',
+      );
+      final remoteSale = await source.createSale(
+        items: const [CartLine(productId: serviceId, quantity: 1)],
+        paid: 2000,
+        paymentMethod: 'Efectivo',
+        operationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      );
+      expect(remoteSale.number, 'V-000001');
+      await engine(source).runOnce();
+      await engine(target).runOnce();
+
+      final localSale = await target.createSale(
+        items: const [CartLine(productId: serviceId, quantity: 1)],
+        paid: 2000,
+        paymentMethod: 'Efectivo',
+        operationId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      );
+
+      expect(localSale.number, 'V-000002');
+      expect((await target.listSales()).map((sale) => sale.number), {
+        'V-000001',
+        'V-000002',
+      });
+    },
+  );
+
+  test(
     'configuración del negocio se conserva y llega al segundo equipo',
     () async {
       final sourcePath = p.join(directory.path, 'business-source.sqlite3');

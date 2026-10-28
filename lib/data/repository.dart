@@ -1790,17 +1790,38 @@ class CapcRepository {
     if (applied < total && dueAt == null) {
       throw const CapcException('Indica el vencimiento de la venta a crédito.');
     }
-    await txn.rawUpdate(
-      "UPDATE counters SET value = value + 1 WHERE name = 'sale'",
-    );
-    final sequence =
+    final counter =
         (await txn.query(
               'counters',
+              columns: ['value'],
               where: 'name = ?',
               whereArgs: ['sale'],
             )).single['value']
             as int;
-    final number = 'V-${sequence.toString().padLeft(6, '0')}';
+    final maximumSequence =
+        (await txn.rawQuery(
+              'SELECT COALESCE(MAX(sequence),0) AS value FROM sales WHERE business_id=?',
+              [businessId],
+            )).single['value']
+            as int;
+    var sequence = max(counter, maximumSequence) + 1;
+    var number = 'V-${sequence.toString().padLeft(6, '0')}';
+    while ((await txn.query(
+      'sales',
+      columns: ['id'],
+      where: 'business_id=? AND number=?',
+      whereArgs: [businessId, number],
+      limit: 1,
+    )).isNotEmpty) {
+      sequence++;
+      number = 'V-${sequence.toString().padLeft(6, '0')}';
+    }
+    await txn.update(
+      'counters',
+      {'value': sequence},
+      where: 'name = ?',
+      whereArgs: ['sale'],
+    );
     final saleId = _uuid.v4();
     final now = _now();
     await txn.insert('sales', {
