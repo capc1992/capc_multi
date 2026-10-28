@@ -177,3 +177,25 @@ instalo el APK Android.
 - El cliente corregido se abrio mediante `ABRIR-CAPC-PILOTO.cmd` y quedo en la
   creacion del primer propietario. Aun no se ha creado el negocio remoto, no se
   ha vinculado el segundo Windows y no se ha instalado el APK Android.
+
+## Vinculacion inicial del piloto corregido
+
+- Se creo un propietario local ficticio en el Windows de desarrollo. Su base
+  aislada conserva un usuario, cero productos, cero ventas y cero operaciones
+  pendientes.
+- El Windows de desarrollo quedo conectado y sincronizado con el negocio
+  piloto. La aplicacion confirmo una identidad de negocio y de dispositivo en
+  la base nueva, sin reutilizar datos SQLite del intento anterior.
+- El APK debug se instalo correctamente por ADB en el Xiaomi M2102J20SG. Se
+  creo su propietario local ficticio y se vinculo mediante un codigo temporal
+  de un solo uso.
+- La lista central de dispositivos confirmo `LAPTOP-B9UDDQA5` en Windows y
+  `Xiaomi M2102J20SG` en Android, ambos con acceso el 28 de octubre de 2026 a
+  las 15:12. Windows mostro `Sincronizado` y ninguna operacion pendiente.
+- El ZIP y su archivo `.sha256` se copiaron a
+  `E:\CAPC-PILOTO-CORREGIDO-20261028`. El ZIP copiado mide 109623945 bytes y
+  su SHA-256 coincide con el origen:
+  `966ED753805D1398ECFFD2122F8FF735D1CD0C91C83578D8D47962BC2420544E`.
+- El workflow `Cloud Sync Identity` del commit `5fe5f14` aprobo todas sus
+  validaciones. Falta instalar y vincular el segundo Windows antes de comenzar
+  la matriz fisica de operaciones.
