@@ -199,3 +199,23 @@ instalo el APK Android.
 - El workflow `Cloud Sync Identity` del commit `5fe5f14` aprobo todas sus
   validaciones. Falta instalar y vincular el segundo Windows antes de comenzar
   la matriz fisica de operaciones.
+
+## Linea base fisica en tres dispositivos
+
+- El segundo Windows se instalo desde el ZIP auditado de la unidad externa, se
+  vinculo con un codigo temporal y termino sincronizado sin movimientos
+  previos.
+- Desde el segundo Windows se creo el producto ficticio `PILOTO-001`, con
+  compra 1000, venta 2000, stock 10 y minimo 2. El Windows de desarrollo lo
+  recibio con los mismos valores y con outbox vacio.
+- Android mostro el mismo producto, categoria `PILOTO`, precios 1000/2000 y
+  stock/minimo 10/2 en su inventario.
+- Desde Android se registro `V-000001` por una unidad: total y cobro 2000,
+  efectivo recibido 3000 y cambio 1000. El Windows de desarrollo recibio la
+  venta, el pago y el costo unitario 1000, redujo el stock a 9 y mantuvo el
+  outbox vacio.
+- El segundo Windows confirmo `V-000001` con los mismos importes y stock 9.
+  Quedo aprobada la linea base segundo Windows -> servidor -> Windows de
+  desarrollo -> Android y Android -> servidor -> ambos Windows.
+- El siguiente escenario es la operacion controlada sin Internet y posterior
+  reconexion, aun exclusivamente con datos ficticios.
