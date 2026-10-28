@@ -260,6 +260,7 @@ instalo el APK Android.
 - La carpeta lista para llevar al segundo equipo quedo en
   `E:\CAPC-ACTUALIZADOR-UN-CLIC-20261028`. Su manifiesto verifico 28 archivos
   sin diferencias, el script no tiene errores de sintaxis y la carpeta no
-  contiene bases de datos.
+  contiene bases de datos. Puede ejecutarse directamente desde el disco
+  externo, sin copiarla al segundo PC ni usar permisos de administrador.
 - Queda pendiente ejecutar `ACTUALIZAR-CAPC-PILOTO.cmd` en el segundo Windows y
   confirmar fisicamente que la siguiente venta se registra como `V-000002`.

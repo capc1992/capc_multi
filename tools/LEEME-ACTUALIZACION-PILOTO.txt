@@ -1,10 +1,13 @@
 ACTUALIZADOR CAPC PILOTO - CONSECUTIVO DE VENTAS
 
-1. Copie esta carpeta completa al Escritorio del segundo PC.
+1. Conecte este disco al segundo PC.
 2. Cierre CAPC completamente.
-3. Haga doble clic en ACTUALIZAR-CAPC-PILOTO.cmd.
-4. Espere el mensaje de actualizacion completada.
-5. El actualizador abrira la instalacion piloto anterior.
+3. Abra esta carpeta directamente desde el disco.
+4. Haga doble clic en ACTUALIZAR-CAPC-PILOTO.cmd.
+5. Espere el mensaje de actualizacion completada.
+6. El actualizador abrira la instalacion piloto anterior.
+
+No necesita copiar la carpeta al segundo PC ni ejecutar como administrador.
 
 El proceso busca automaticamente una unica instalacion piloto en el
 Escritorio, crea un respaldo de DATOS-PILOTO, actualiza solamente la carpeta
