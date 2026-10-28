@@ -160,16 +160,38 @@ abstract interface class SecureCredentialStore {
   Future<void> clear();
 }
 
-class PlatformSecureCredentialStore implements SecureCredentialStore {
-  PlatformSecureCredentialStore({FlutterSecureStorage? storage})
-    : _storage =
-          storage ??
-          const FlutterSecureStorage(
-            aOptions: AndroidOptions(encryptedSharedPreferences: true),
-            wOptions: WindowsOptions(useBackwardCompatibility: false),
-          );
+const defaultRemoteCredentialKey = 'capc.remote.session.v1';
+const compiledRemoteCredentialNamespace = String.fromEnvironment(
+  'CAPC_CREDENTIAL_NAMESPACE',
+);
 
-  static const _key = 'capc.remote.session.v1';
+String remoteCredentialKey({
+  String namespace = compiledRemoteCredentialNamespace,
+}) {
+  if (namespace.isEmpty) return defaultRemoteCredentialKey;
+  if (!RegExp(r'^[a-z0-9][a-z0-9._-]{0,63}$').hasMatch(namespace)) {
+    throw ArgumentError.value(
+      namespace,
+      'namespace',
+      'Debe usar entre 1 y 64 caracteres: a-z, 0-9, punto, guion o guion bajo.',
+    );
+  }
+  return '$defaultRemoteCredentialKey.$namespace';
+}
+
+class PlatformSecureCredentialStore implements SecureCredentialStore {
+  PlatformSecureCredentialStore({
+    FlutterSecureStorage? storage,
+    String credentialNamespace = compiledRemoteCredentialNamespace,
+  }) : _key = remoteCredentialKey(namespace: credentialNamespace),
+       _storage =
+           storage ??
+           const FlutterSecureStorage(
+             aOptions: AndroidOptions(encryptedSharedPreferences: true),
+             wOptions: WindowsOptions(useBackwardCompatibility: false),
+           );
+
+  final String _key;
   final FlutterSecureStorage _storage;
 
   @override

@@ -11,6 +11,7 @@ import 'package:capc_multiservicio/sync/sync_transport.dart';
 import 'package:capc_multiservicio/ui/remote_identity_page.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart' as native;
@@ -153,6 +154,56 @@ void main() {
     } finally {
       db.close();
     }
+  });
+
+  test('el piloto aísla su credencial y conserva la clave normal', () async {
+    expect(remoteCredentialKey(), defaultRemoteCredentialKey);
+    expect(
+      remoteCredentialKey(namespace: 'pilot-2026-10'),
+      '$defaultRemoteCredentialKey.pilot-2026-10',
+    );
+    expect(
+      remoteCredentialKey(namespace: 'production'),
+      isNot(remoteCredentialKey(namespace: 'pilot-2026-10')),
+    );
+    expect(
+      () => remoteCredentialKey(namespace: 'Piloto con espacios'),
+      throwsArgumentError,
+    );
+
+    FlutterSecureStorage.setMockInitialValues({});
+    const storage = FlutterSecureStorage();
+    final normal = PlatformSecureCredentialStore(storage: storage);
+    final pilot = PlatformSecureCredentialStore(
+      storage: storage,
+      credentialNamespace: 'pilot-2026-10',
+    );
+    final expires = DateTime.now().toUtc().add(const Duration(days: 1));
+    await normal.write(
+      RemoteSession(
+        businessId: 'normal-business',
+        deviceId: 'normal-device',
+        accessToken: 'normal-access',
+        refreshToken: 'normal-refresh',
+        accessExpiresAt: expires,
+        refreshExpiresAt: expires,
+        permissions: const [],
+      ),
+    );
+    await pilot.write(
+      RemoteSession(
+        businessId: 'pilot-business',
+        deviceId: 'pilot-device',
+        accessToken: 'pilot-access',
+        refreshToken: 'pilot-refresh',
+        accessExpiresAt: expires,
+        refreshExpiresAt: expires,
+        permissions: const [],
+      ),
+    );
+    await pilot.clear();
+    expect((await normal.read())!.refreshToken, 'normal-refresh');
+    expect(await pilot.read(), isNull);
   });
 
   test(
