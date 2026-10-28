@@ -156,3 +156,24 @@ siendo el piloto fisico descrito en la seccion anterior.
 
 No se usaron datos reales, no se copio el paquete al equipo del local y no se
 instalo el APK Android.
+
+## Paquete corregido del 28 de octubre de 2026
+
+- El commit `2e58ecf` quedo publicado en `feature/cross-platform-updates` y el
+  workflow `Cloud Sync Identity` aprobo PostgreSQL, Windows y Android.
+- `flutter analyze --no-pub` termino sin observaciones, las 208 pruebas Flutter
+  aprobaron y las 6 pruebas del empaquetador aprobaron.
+- Se recompilaron Windows release y Android debug con
+  `CAPC_SYNC_URL=https://api-test.capcmultiservicios.site` y
+  `CAPC_CREDENTIAL_NAMESPACE=pilot-2026-10`.
+- Se genero el paquete corregido
+  `dist/CAPC-PILOTO-AISLADO-0.4.1-8-20261028-144622-179.zip` con SHA-256
+  `966ED753805D1398ECFFD2122F8FF735D1CD0C91C83578D8D47962BC2420544E`.
+- Las 30 entradas del manifiesto coincidieron en hash y tamano. El paquete
+  contiene el lanzador y el APK esperado, y no contiene bases SQLite.
+- El ZIP se extrajo en una carpeta nueva del Escritorio:
+  `C:\Users\CAPC\Desktop\CAPC-PILOTO-CORREGIDO-20261028\CAPC-PILOTO-AISLADO-0.4.1-8-20261028-144622-179`.
+  La carpeta del intento anterior permanece intacta.
+- El cliente corregido se abrio mediante `ABRIR-CAPC-PILOTO.cmd` y quedo en la
+  creacion del primer propietario. Aun no se ha creado el negocio remoto, no se
+  ha vinculado el segundo Windows y no se ha instalado el APK Android.
