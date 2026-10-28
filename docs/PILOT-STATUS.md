@@ -234,5 +234,32 @@ instalo el APK Android.
   agrego una regresion que recibe `V-000001` y crea `V-000002`, manteniendo la
   cobertura de dos ventas offline simultaneas con el mismo numero inicial.
 - `flutter analyze --no-pub` termino limpio, las 13 pruebas de sincronizacion y
-  la suite completa de 209 pruebas aprobaron. Los clientes instalados aun deben
-  actualizarse con una compilacion nueva antes de reanudar el piloto offline.
+  la suite completa de 209 pruebas aprobaron.
+
+## Actualizacion de los dispositivos del piloto
+
+- Se recompilaron Windows release y Android debug con el servidor aislado
+  `https://api-test.capcmultiservicios.site` y el espacio de credenciales
+  `pilot-2026-10`.
+- Se genero el paquete
+  `dist/CAPC-PILOTO-AISLADO-0.4.1-8-20261028-161243-210.zip`, con SHA-256
+  `D1EAEBE3D7D32980C85D4713E75838DB94937567FCFDFFFAFFD8FE08C369A40C`.
+  Sus 30 entradas se verificaron sin diferencias y no contiene bases de datos.
+- El Windows de desarrollo se actualizo conservando `DATOS-PILOTO`. La copia
+  completa coincide con la compilacion nueva y la aplicacion reconocio la base
+  existente al abrirse.
+- Android se actualizo mediante instalacion sobre la aplicacion existente. El
+  proceso termino correctamente y la aplicacion conservo sus datos de acceso.
+- Se agrego un actualizador de un clic para el segundo Windows. Busca la unica
+  instalacion piloto del Escritorio, comprueba que CAPC este cerrado, respalda
+  `DATOS-PILOTO`, reemplaza solamente los binarios de Windows, verifica cada
+  archivo y abre de nuevo la instalacion anterior.
+- El actualizador aprobo una prueba funcional sobre una instalacion simulada:
+  actualizo ejecutable y snapshot, conservo la base, creo el respaldo y genero
+  el registro de actualizacion.
+- La carpeta lista para llevar al segundo equipo quedo en
+  `E:\CAPC-ACTUALIZADOR-UN-CLIC-20261028`. Su manifiesto verifico 28 archivos
+  sin diferencias, el script no tiene errores de sintaxis y la carpeta no
+  contiene bases de datos.
+- Queda pendiente ejecutar `ACTUALIZAR-CAPC-PILOTO.cmd` en el segundo Windows y
+  confirmar fisicamente que la siguiente venta se registra como `V-000002`.
