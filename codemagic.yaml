@@ -1,0 +1,42 @@
+workflows:
+  ios-sideloadly-production:
+    name: CAPC iOS · Sideloadly · Producción
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+    environment:
+      flutter: 3.47.5
+      xcode: latest
+    scripts:
+      - name: Preparar Flutter y dependencias
+        script: |
+          flutter config --enable-swift-package-manager
+          flutter pub get
+      - name: Analizar código
+        script: flutter analyze --no-pub
+      - name: Ejecutar pruebas
+        script: flutter test --no-pub
+      - name: Compilar iOS release sin firma
+        script: |
+          flutter build ios --release --no-codesign \
+            --build-name=0.4.2 \
+            --build-number=9 \
+            --dart-define=CAPC_SYNC_URL=https://api.capcmultiservicios.site \
+            --dart-define=CAPC_CREDENTIAL_NAMESPACE=production
+      - name: Crear IPA para Sideloadly
+        script: |
+          set -euo pipefail
+          APP_PATH="$CM_BUILD_DIR/build/ios/iphoneos/Runner.app"
+          OUTPUT_DIR="$CM_BUILD_DIR/build/ios/ipa-sideloadly"
+          test -d "$APP_PATH"
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR/Payload"
+          cp -R "$APP_PATH" "$OUTPUT_DIR/Payload/Runner.app"
+          cd "$OUTPUT_DIR"
+          /usr/bin/zip -qry CAPC-MULTISERVICIO-0.4.2-9-sideloadly.ipa Payload
+          shasum -a 256 CAPC-MULTISERVICIO-0.4.2-9-sideloadly.ipa \
+            > CAPC-MULTISERVICIO-0.4.2-9-sideloadly.ipa.sha256
+          rm -rf Payload
+    artifacts:
+      - build/ios/ipa-sideloadly/*.ipa
+      - build/ios/ipa-sideloadly/*.sha256
+      - /tmp/xcodebuild_logs/*.log

@@ -28,7 +28,7 @@ enum UpdateStatus {
   error,
 }
 
-enum UpdatePlatform { windows, android }
+enum UpdatePlatform { windows, android, ios }
 
 enum PlatformUpdatePhase {
   downloading,

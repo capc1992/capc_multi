@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'data/repository.dart';
 import 'platform/platform_services.dart';
 import 'services/backup_transfer.dart';
+import 'services/factory_reset.dart';
 import 'sync/remote_identity.dart';
 import 'sync/sync_coordinator.dart';
 import 'ui/capc_app.dart';
@@ -15,24 +16,29 @@ Future<void> main() async {
   String? databasePath;
   try {
     databasePath = await appPlatform.databasePath();
-    final repository = await CapcRepository.open(databasePath);
-    final remoteIdentity = RemoteIdentityController(repository: repository);
-    await remoteIdentity.initialize();
-    final syncCoordinator = SyncCoordinator(
-      repository: repository,
-      identity: remoteIdentity,
-    );
-    await syncCoordinator.initialize();
-    _runCapc(
-      repository,
-      remoteIdentity: remoteIdentity,
-      syncCoordinator: syncCoordinator,
-    );
+    await FactoryResetService.completePendingReset(databasePath);
+    await _openCapc(databasePath);
   } catch (error) {
     runApp(
       _StartupFailure(message: error.toString(), databasePath: databasePath),
     );
   }
+}
+
+Future<void> _openCapc(String databasePath) async {
+  final repository = await CapcRepository.open(databasePath);
+  final remoteIdentity = RemoteIdentityController(repository: repository);
+  await remoteIdentity.initialize();
+  final syncCoordinator = SyncCoordinator(
+    repository: repository,
+    identity: remoteIdentity,
+  );
+  await syncCoordinator.initialize();
+  _runCapc(
+    repository,
+    remoteIdentity: remoteIdentity,
+    syncCoordinator: syncCoordinator,
+  );
 }
 
 void _runCapc(
@@ -41,12 +47,72 @@ void _runCapc(
   SyncCoordinator? syncCoordinator,
 }) {
   final updates = UpdateRuntime.create(databasePath: repository.databasePath);
+
+  Future<void> finishReset(String backupPath) async {
+    await FactoryResetService.markForReset(
+      databasePath: repository.databasePath,
+      backupPath: backupPath,
+    );
+    syncCoordinator?.dispose();
+    updates.dispose();
+    await repository.close();
+    await FactoryResetService.completePendingReset(repository.databasePath);
+    try {
+      await _openCapc(repository.databasePath);
+    } catch (error) {
+      runApp(
+        _StartupFailure(
+          message: error.toString(),
+          databasePath: repository.databasePath,
+        ),
+      );
+    }
+  }
+
+  Future<String> resetLocal(String password) async {
+    final user = repository.currentUser;
+    if (user == null || user.role != UserRole.owner || user.central) {
+      throw const CapcException(
+        'Inicia sesión con el propietario local para reiniciar este dispositivo.',
+      );
+    }
+    await repository.login(user.username, password);
+    final backup = await FactoryResetService.createBackup(repository);
+    await remoteIdentity?.credentials.clear();
+    await finishReset(backup);
+    return backup;
+  }
+
+  Future<String> deleteBusiness({
+    required String email,
+    required String password,
+  }) async {
+    final user = repository.currentUser;
+    if (user == null || user.role != UserRole.owner || user.central) {
+      throw const CapcException(
+        'Inicia sesión con el propietario local para eliminar el negocio.',
+      );
+    }
+    final identity = remoteIdentity;
+    if (identity == null) {
+      throw const RemoteIdentityException(
+        'La conexión remota no está disponible.',
+      );
+    }
+    final backup = await FactoryResetService.createBackup(repository);
+    await identity.deleteAccount(email: email, password: password);
+    await finishReset(backup);
+    return backup;
+  }
+
   runApp(
     CapcApp(
       repository: repository,
       remoteIdentity: remoteIdentity,
       syncCoordinator: syncCoordinator,
       updateController: updates,
+      onResetLocal: resetLocal,
+      onDeleteBusiness: deleteBusiness,
     ),
   );
   unawaited(updates.initialize());

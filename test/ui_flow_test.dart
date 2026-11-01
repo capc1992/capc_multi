@@ -790,7 +790,7 @@ void main() {
       'Configuración',
     );
     expect(
-      find.textContaining('selector de documentos de Android'),
+      find.textContaining('selector de documentos del dispositivo'),
       findsOneWidget,
     );
     expect(find.textContaining('ni se conecta al VPS'), findsOneWidget);
@@ -830,4 +830,95 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  testWidgets('Inventario confirma y elimina un producto con stock cero', (
+    tester,
+  ) async {
+    final repository = await openTestApp(tester, const Size(1200, 900));
+    addTearDown(repository.close);
+    await tester.runAsync(
+      () => repository.saveProduct(
+        const Product(
+          id: 'delete-me',
+          code: 'DEL-001',
+          name: 'Producto eliminable',
+          unit: 'Unidad',
+          isService: false,
+          purchasePrice: 0,
+          salePrice: 100,
+          stock: 0,
+          minimumStock: 0,
+        ),
+      ),
+    );
+    await tester.pumpWidget(CapcApp(repository: repository));
+    await databaseFrames(tester);
+    await navigateTo(tester, 'Inventario');
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Buscar producto, servicio o código'),
+      'DEL-001',
+    );
+    await tester.pumpAndSettle();
+
+    final remove = find.widgetWithText(TextButton, 'Eliminar producto');
+    expect(remove, findsOneWidget);
+    await tester.tap(remove);
+    await tester.pumpAndSettle();
+    expect(find.text('Eliminar Producto eliminable'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Eliminar'));
+    await databaseFrames(tester);
+
+    late List<Product> remaining;
+    await tester.runAsync(() async {
+      remaining = await repository.listProducts(query: 'DEL-001');
+    });
+    expect(remaining, isEmpty);
+    expect(
+      find.text('Producto eliminable fue eliminado del catálogo.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('Zona peligrosa exige contraseña y confirmación escrita', (
+    tester,
+  ) async {
+    final repository = await openTestApp(tester, const Size(1200, 900));
+    addTearDown(repository.close);
+    String? receivedPassword;
+    await tester.pumpWidget(
+      CapcApp(
+        repository: repository,
+        onResetLocal: (password) async {
+          receivedPassword = password;
+          return 'respaldo.sqlite3';
+        },
+      ),
+    );
+    await databaseFrames(tester);
+    await navigateTo(tester, 'Configuración');
+
+    final reset = find.widgetWithText(
+      OutlinedButton,
+      'Reiniciar este dispositivo',
+    );
+    expect(reset, findsOneWidget);
+    await tester.ensureVisible(reset);
+    await tester.tap(reset);
+    await tester.pumpAndSettle();
+    expect(find.text('Escribe REINICIAR para confirmar'), findsOneWidget);
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Contraseña del propietario local'),
+      'ClavePrueba2026!',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Escribe REINICIAR para confirmar'),
+      'REINICIAR',
+    );
+    await tester.tap(
+      find.widgetWithText(FilledButton, 'Crear respaldo y reiniciar'),
+    );
+    await tester.pumpAndSettle();
+    expect(receivedPassword, 'ClavePrueba2026!');
+  });
 }

@@ -213,10 +213,18 @@ Future<bool> confirmAction(
   String title,
   String detail, {
   String action = 'Confirmar',
+  bool destructive = false,
 }) async =>
     await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        icon: destructive
+            ? Icon(
+                Icons.warning_amber_rounded,
+                color: Theme.of(ctx).colorScheme.error,
+                size: 36,
+              )
+            : null,
         title: Text(title),
         content: SingleChildScrollView(child: Text(detail)),
         actions: [
@@ -225,6 +233,12 @@ Future<bool> confirmAction(
             child: const Text('Cancelar'),
           ),
           FilledButton(
+            style: destructive
+                ? FilledButton.styleFrom(
+                    backgroundColor: Theme.of(ctx).colorScheme.error,
+                    foregroundColor: Theme.of(ctx).colorScheme.onError,
+                  )
+                : null,
             onPressed: () => Navigator.pop(ctx, true),
             child: Text(action),
           ),

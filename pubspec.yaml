@@ -1,7 +1,7 @@
 name: capc_multiservicio
 description: Aplicación de escritorio local de ventas e inventario para CAPC MULTISERVICIO.
 publish_to: none
-version: 0.4.1+8
+version: 0.4.2+9
 
 environment:
   sdk: '>=3.10.0 <4.0.0'
@@ -13,6 +13,7 @@ dependencies:
     sdk: flutter
   sqflite_common_ffi: ^2.4.3
   sqflite_common: ^2.5.13
+  sqflite: ^2.4.2
   sqlite3: ^3.0.0
   path_provider: ^2.1.5
   path: ^1.9.1
@@ -23,6 +24,8 @@ dependencies:
   pdf: ^3.11.3
   printing: ^5.15.1
   file_selector: ^1.0.3
+  share_plus: ^12.0.1
+  url_launcher: ^6.3.2
   excel_community: ^2.4.0
   archive: ^4.3.0
   xml: ^7.0.1
@@ -54,7 +57,7 @@ flutter:
 
 flutter_launcher_icons:
   android: "launcher_icon"
-  ios: false
+  ios: true
   image_path: "assets/branding/capc_app_icon_master.png"
   min_sdk_android: 21
   web:

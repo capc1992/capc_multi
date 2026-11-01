@@ -31,14 +31,22 @@ class UpdateRuntime {
           versionProvider: provider,
           gateway: PlayCoreUpdateGateway(),
         ),
+        CapcPlatformKind.ios => UnavailableUpdateService(
+          versionProvider: provider,
+          currentPlatform: UpdatePlatform.ios,
+          reason:
+              'En iPhone o iPad, instala la nueva IPA con Sideloadly. Tus datos locales se conservan.',
+        ),
       };
     } on UpdateException catch (error) {
       channel = UpdateChannel.stable;
       service = UnavailableUpdateService(
         versionProvider: provider,
-        currentPlatform: appPlatform.isAndroid
-            ? UpdatePlatform.android
-            : UpdatePlatform.windows,
+        currentPlatform: switch (appPlatform.kind) {
+          CapcPlatformKind.windows => UpdatePlatform.windows,
+          CapcPlatformKind.android => UpdatePlatform.android,
+          CapcPlatformKind.ios => UpdatePlatform.ios,
+        },
         reason: error.message,
       );
     }

@@ -81,7 +81,9 @@ La compilación de comprobación `flutter build apk --debug --no-pub` fue aproba
 
 ## Privacidad y eliminación de cuenta
 
-`Configuración > Conexión remota y dispositivos` ofrece la política de privacidad, el recurso web externo y, cuando hay una identidad conectada, `Eliminar cuenta remota`. La eliminación exige correo, contraseña remota y escribir `ELIMINAR`; borra la identidad y los datos sincronizados del servidor y limpia la credencial segura del dispositivo. No elimina silenciosamente SQLite local.
+`Configuración > Conexión remota y dispositivos` ofrece la política de privacidad, el recurso web externo y, cuando el propietario remoto está conectado, `Eliminar negocio y empezar de cero`. La eliminación exige correo, contraseña remota y escribir `ELIMINAR`; crea un respaldo local, borra la identidad y los datos sincronizados del servidor, limpia la credencial segura y vuelve al alta inicial en ese dispositivo. Los demás equipos se reinician manualmente.
+
+`Configuración > Zona peligrosa > Reiniciar este dispositivo` exige la contraseña del propietario local y escribir `REINICIAR`. Conserva un respaldo automático y los documentos exportados, pero elimina la base activa y los usuarios locales del dispositivo.
 
 Las URL que deben permanecer públicas y registrarse en Play Console son:
 

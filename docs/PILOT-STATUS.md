@@ -1,6 +1,22 @@
 # Estado del piloto CAPC
 
-Actualizado el 27 de octubre de 2026.
+Actualizado el 1 de noviembre de 2026.
+
+## Eliminación y reinicio seguros
+
+- Inventario muestra una acción de eliminar para usuarios autorizados. Exige
+  stock cero, protege materiales usados por servicios y conserva el historial.
+- La nueva Zona peligrosa permite reiniciar solo el dispositivo o eliminar el
+  negocio remoto y empezar de cero. Siempre crea un respaldo automático y exige
+  contraseña más confirmación escrita.
+- Formato y análisis están limpios; las 215 pruebas Flutter aprobaron. Windows
+  release y Android debug compilaron con la URL y credenciales aisladas.
+- Paquete no instalado:
+  `dist/CAPC-PILOTO-AISLADO-0.4.1-8-20261101-125810-342.zip`.
+  SHA-256:
+  `8734CE93EDAF185A0EAFFE5776ACC53A1BADC05BA32A59CC9256DB5AF220B0BA`.
+- No se eliminaron datos locales o remotos. El código continúa sin commit ni
+  push; el paquete no reemplaza todavía las instalaciones del piloto.
 
 ## Instalacion y publicacion completadas
 

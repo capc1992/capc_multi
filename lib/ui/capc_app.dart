@@ -37,6 +37,9 @@ String _date(DateTime value) => DateFormat('dd/MM/yyyy').format(value);
 String _timestamp(DateTime value) =>
     DateFormat('dd/MM/yyyy · HH:mm').format(_bogota(value));
 
+typedef DeleteBusinessCallback =
+    Future<String> Function({required String email, required String password});
+
 class CapcApp extends StatelessWidget {
   const CapcApp({
     super.key,
@@ -44,11 +47,15 @@ class CapcApp extends StatelessWidget {
     this.remoteIdentity,
     this.syncCoordinator,
     this.updateController,
+    this.onResetLocal,
+    this.onDeleteBusiness,
   });
   final CapcRepository repository;
   final RemoteIdentityController? remoteIdentity;
   final SyncCoordinator? syncCoordinator;
   final UpdateController? updateController;
+  final Future<String> Function(String password)? onResetLocal;
+  final DeleteBusinessCallback? onDeleteBusiness;
 
   @override
   Widget build(BuildContext context) {
@@ -131,6 +138,7 @@ class CapcApp extends StatelessWidget {
         dividerTheme: const DividerThemeData(color: _border, space: 24),
       ),
       home: CapcAccessGate(
+        key: ObjectKey(repository),
         repository: repository,
         remoteIdentity: identity,
         builder: (onLogout) => _CapcHome(
@@ -139,6 +147,8 @@ class CapcApp extends StatelessWidget {
           remoteIdentity: identity,
           syncCoordinator: syncCoordinator,
           updateController: updateController,
+          onResetLocal: onResetLocal,
+          onDeleteBusiness: onDeleteBusiness,
         ),
       ),
     );
@@ -152,12 +162,16 @@ class _CapcHome extends StatefulWidget {
     required this.remoteIdentity,
     required this.syncCoordinator,
     required this.updateController,
+    required this.onResetLocal,
+    required this.onDeleteBusiness,
   });
   final CapcRepository repository;
   final VoidCallback onLogout;
   final RemoteIdentityController remoteIdentity;
   final SyncCoordinator? syncCoordinator;
   final UpdateController? updateController;
+  final Future<String> Function(String password)? onResetLocal;
+  final DeleteBusinessCallback? onDeleteBusiness;
   @override
   State<_CapcHome> createState() => _CapcHomeState();
 }
@@ -528,6 +542,8 @@ class _CapcHomeState extends State<_CapcHome> {
                                             controller: widget.remoteIdentity,
                                             syncCoordinator:
                                                 widget.syncCoordinator,
+                                            onDeleteBusiness:
+                                                widget.onDeleteBusiness,
                                           ),
                                         ),
                                       ),
@@ -817,6 +833,7 @@ class _CapcHomeState extends State<_CapcHome> {
                 builder: (_) => RemoteIdentityPage(
                   controller: widget.remoteIdentity,
                   syncCoordinator: widget.syncCoordinator,
+                  onDeleteBusiness: widget.onDeleteBusiness,
                 ),
               ),
             )
@@ -1798,6 +1815,23 @@ class _CapcHomeState extends State<_CapcHome> {
                               icon: const Icon(Icons.build_outlined),
                               label: const Text('Materiales consumidos'),
                             ),
+                          if (_can('productos.eliminar'))
+                            TextButton.icon(
+                              style: TextButton.styleFrom(
+                                foregroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.error,
+                              ),
+                              onPressed: _busy
+                                  ? null
+                                  : () => _confirmDeleteProduct(p),
+                              icon: const Icon(Icons.delete_outline),
+                              label: Text(
+                                p.isService
+                                    ? 'Eliminar servicio'
+                                    : 'Eliminar producto',
+                              ),
+                            ),
                         ],
                       ),
                       const Divider(height: 1),
@@ -1809,6 +1843,24 @@ class _CapcHomeState extends State<_CapcHome> {
         ),
       ],
     );
+  }
+
+  Future<void> _confirmDeleteProduct(Product product) async {
+    final confirmed = await confirmAction(
+      context,
+      'Eliminar ${product.name}',
+      product.isService
+          ? 'Se retirará el servicio ${product.code} del catálogo. Las ventas y la auditoría histórica se conservarán.'
+          : 'Se retirará el producto ${product.code} del inventario. Debe tener existencias en cero y no formar parte de servicios activos. Las ventas y los movimientos históricos se conservarán.',
+      action: 'Eliminar',
+      destructive: true,
+    );
+    if (!confirmed || !mounted) return;
+    await _run(() async {
+      await widget.repository.deleteProduct(product.id);
+      await _refreshAll();
+      _notify('${product.name} fue eliminado del catálogo.');
+    });
   }
 
   Widget _customersPage() {
@@ -2379,6 +2431,7 @@ class _CapcHomeState extends State<_CapcHome> {
                         builder: (_) => RemoteIdentityPage(
                           controller: widget.remoteIdentity,
                           syncCoordinator: widget.syncCoordinator,
+                          onDeleteBusiness: widget.onDeleteBusiness,
                         ),
                       ),
                     ),
@@ -2419,8 +2472,8 @@ class _CapcHomeState extends State<_CapcHome> {
         'Copia de seguridad',
         children: [
           Text(
-            appPlatform.isAndroid
-                ? 'Exporta una copia mediante el selector de documentos de Android. Conserva varias copias con fecha fuera de la aplicación.'
+            appPlatform.isAndroid || appPlatform.isIOS
+                ? 'Exporta una copia mediante el selector de documentos del dispositivo. Conserva varias copias con fecha fuera de la aplicación.'
                 : 'Guarda una copia de la base de datos en otra carpeta o en una memoria USB. Conserva varias copias con fecha.',
           ),
           const SizedBox(height: 16),
@@ -2456,6 +2509,63 @@ class _CapcHomeState extends State<_CapcHome> {
         ],
       ),
       const SizedBox(height: 20),
+      if (_owner && widget.onResetLocal != null) ...[
+        _section(
+          'Zona peligrosa',
+          children: [
+            const Text(
+              'Estas acciones crean primero un respaldo automático. Los PDF, archivos Excel y respaldos anteriores no se eliminan.',
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Theme.of(context).colorScheme.error,
+                side: BorderSide(color: Theme.of(context).colorScheme.error),
+              ),
+              onPressed: _busy ? null : _confirmResetLocal,
+              icon: const Icon(Icons.restart_alt),
+              label: const Text('Reiniciar este dispositivo'),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Borra la base y los usuarios de este equipo. No elimina el negocio remoto ni las copias de otros dispositivos.',
+              style: TextStyle(color: _muted, fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.error,
+                foregroundColor: Theme.of(context).colorScheme.onError,
+              ),
+              onPressed:
+                  _busy ||
+                      !widget.remoteIdentity.connected ||
+                      widget.onDeleteBusiness == null
+                  ? null
+                  : () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => RemoteIdentityPage(
+                          controller: widget.remoteIdentity,
+                          syncCoordinator: widget.syncCoordinator,
+                          onDeleteBusiness: widget.onDeleteBusiness,
+                        ),
+                      ),
+                    ),
+              icon: const Icon(Icons.delete_forever_outlined),
+              label: const Text('Eliminar negocio y empezar de cero'),
+            ),
+            if (!widget.remoteIdentity.connected)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  'Conéctate al negocio remoto para habilitar el borrado total.',
+                  style: TextStyle(color: _muted, fontSize: 12),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 20),
+      ],
       _section(
         'Catálogo de ejemplo',
         children: [
@@ -2484,14 +2594,14 @@ class _CapcHomeState extends State<_CapcHome> {
         'Impresión',
         children: [
           Text(
-            appPlatform.isAndroid
-                ? 'Abre una venta en Historial para ver, guardar, compartir o imprimir el PDF mediante los diálogos de Android.'
+            appPlatform.isAndroid || appPlatform.isIOS
+                ? 'Abre una venta en Historial para ver, guardar, compartir o imprimir el PDF mediante los diálogos del dispositivo.'
                 : 'Abre una venta en Historial y elige Imprimir tirilla (80 mm), Imprimir carta o Guardar PDF. El diálogo de Windows permite seleccionar tu impresora instalada.',
           ),
           const SizedBox(height: 12),
           Text(
-            appPlatform.isAndroid
-                ? 'Los documentos son comprobantes internos sin validez fiscal. Android no accede directamente a la impresora USB conectada al computador y nunca envía documentos automáticamente.'
+            appPlatform.isAndroid || appPlatform.isIOS
+                ? 'Los documentos son comprobantes internos sin validez fiscal. La aplicación nunca envía documentos automáticamente.'
                 : 'Los documentos son comprobantes internos sin validez fiscal. La compatibilidad de tu impresora USB debe comprobarse con su controlador instalado.',
             style: const TextStyle(color: _muted),
           ),
@@ -2499,6 +2609,18 @@ class _CapcHomeState extends State<_CapcHome> {
       ),
     ],
   );
+
+  Future<void> _confirmResetLocal() async {
+    final password = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _ResetDeviceDialog(),
+    );
+    if (password == null || !mounted) return;
+    await _run(() async {
+      await widget.onResetLocal!(password);
+    });
+  }
 
   Future<void> _editBusiness() async {
     if (!widget.remoteIdentity.connected) {
@@ -3870,6 +3992,97 @@ class _Tag extends StatelessWidget {
         ),
       ],
     ),
+  );
+}
+
+class _ResetDeviceDialog extends StatefulWidget {
+  const _ResetDeviceDialog();
+
+  @override
+  State<_ResetDeviceDialog> createState() => _ResetDeviceDialogState();
+}
+
+class _ResetDeviceDialogState extends State<_ResetDeviceDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _password = TextEditingController();
+  final _confirmation = TextEditingController();
+
+  @override
+  void dispose() {
+    _password.dispose();
+    _confirmation.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    icon: Icon(
+      Icons.warning_amber_rounded,
+      color: Theme.of(context).colorScheme.error,
+      size: 36,
+    ),
+    title: const Text('Reiniciar este dispositivo'),
+    content: SizedBox(
+      width: 460,
+      child: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'CAPC creará un respaldo automático y después borrará la base, los usuarios y la conexión remota de este dispositivo. El negocio del servidor y los otros equipos no se eliminarán.',
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _password,
+                obscureText: true,
+                enableSuggestions: false,
+                autocorrect: false,
+                autofillHints: const [AutofillHints.password],
+                decoration: const InputDecoration(
+                  labelText: 'Contraseña del propietario local',
+                ),
+                validator: (value) => value == null || value.isEmpty
+                    ? 'Escribe la contraseña del propietario.'
+                    : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _confirmation,
+                textCapitalization: TextCapitalization.characters,
+                autocorrect: false,
+                decoration: const InputDecoration(
+                  labelText: 'Escribe REINICIAR para confirmar',
+                ),
+                validator: (value) => value?.trim() == 'REINICIAR'
+                    ? null
+                    : 'Escribe exactamente REINICIAR.',
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Conservar datos'),
+      ),
+      FilledButton(
+        style: FilledButton.styleFrom(
+          backgroundColor: Theme.of(context).colorScheme.error,
+          foregroundColor: Theme.of(context).colorScheme.onError,
+        ),
+        onPressed: () {
+          if (_formKey.currentState!.validate()) {
+            Navigator.pop(context, _password.text);
+          }
+        },
+        child: const Text('Crear respaldo y reiniciar'),
+      ),
+    ],
   );
 }
 

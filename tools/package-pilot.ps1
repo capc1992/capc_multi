@@ -1,6 +1,7 @@
 param(
     [string]$ExpectedSyncUrl = 'https://api-test.capcmultiservicios.site',
-    [string]$ExpectedCredentialNamespace = 'pilot-2026-10'
+    [string]$ExpectedCredentialNamespace = 'pilot-2026-10',
+    [switch]$WindowsOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,7 +11,9 @@ $capcExecutable = Join-Path $capcWindowsRelease 'capc_multi.exe'
 $capcAppSnapshot = Join-Path $capcWindowsRelease 'data\app.so'
 $capcApk = Join-Path $capcProject 'build\app\outputs\flutter-apk\app-debug.apk'
 
-foreach ($capcRequiredFile in @($capcExecutable, $capcAppSnapshot, $capcApk)) {
+$capcRequiredFiles = @($capcExecutable, $capcAppSnapshot)
+if (-not $WindowsOnly) { $capcRequiredFiles += $capcApk }
+foreach ($capcRequiredFile in $capcRequiredFiles) {
     if (-not (Test-Path -LiteralPath $capcRequiredFile -PathType Leaf)) {
         throw ('Falta el artefacto compilado: ' + $capcRequiredFile)
     }
@@ -50,15 +53,17 @@ $capcName = 'CAPC-PILOTO-AISLADO-' + $capcBuildVersion.Replace('+', '-') + '-' +
     (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
 $capcDestination = Join-Path $capcProject ('dist\' + $capcName)
 $capcWindowsDestination = Join-Path $capcDestination 'windows'
-$capcAndroidDestination = Join-Path $capcDestination 'android'
 New-Item -ItemType Directory -Path $capcWindowsDestination | Out-Null
-New-Item -ItemType Directory -Path $capcAndroidDestination | Out-Null
 
 Get-ChildItem -LiteralPath $capcWindowsRelease -Force |
     Copy-Item -Destination $capcWindowsDestination -Recurse
-Copy-Item -LiteralPath $capcApk -Destination (
-    Join-Path $capcAndroidDestination 'CAPC-MULTISERVICIO-PILOTO-debug.apk'
-)
+if (-not $WindowsOnly) {
+    $capcAndroidDestination = Join-Path $capcDestination 'android'
+    New-Item -ItemType Directory -Path $capcAndroidDestination | Out-Null
+    Copy-Item -LiteralPath $capcApk -Destination (
+        Join-Path $capcAndroidDestination 'CAPC-MULTISERVICIO-PILOTO-debug.apk'
+    )
+}
 Copy-Item -LiteralPath (Join-Path $capcProject 'docs\PILOTO-CLIENTES.md') `
     -Destination (Join-Path $capcDestination 'LEEME-PILOTO.md')
 Copy-Item -LiteralPath (Join-Path $capcProject 'docs\VALIDACION-OFFLINE-FIRST.md') `
@@ -86,7 +91,8 @@ $capcMetadata = [PSCustomObject]@{
     CredentialNamespace = $ExpectedCredentialNamespace
     Creado = (Get-Date).ToUniversalTime().ToString('o')
     DatosWindows = 'DATOS-PILOTO'
-    Android = 'debug-no-publicable'
+    Plataformas = if ($WindowsOnly) { 'windows' } else { 'windows,android' }
+    Android = if ($WindowsOnly) { 'no-incluido' } else { 'debug-no-publicable' }
 }
 $capcMetadata | ConvertTo-Json | Set-Content -LiteralPath (
     Join-Path $capcDestination 'PILOTO.json'

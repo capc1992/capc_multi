@@ -8,18 +8,20 @@ import 'platform_factory_stub.dart'
     if (dart.library.io) 'platform_factory_io.dart'
     as platform_impl;
 
-enum CapcPlatformKind { windows, android }
+enum CapcPlatformKind { windows, android, ios }
 
 class DocumentType {
   const DocumentType({
     required this.label,
     required this.extensions,
     required this.mimeType,
+    this.uniformTypeIdentifiers = const [],
   });
 
   final String label;
   final List<String> extensions;
   final String mimeType;
+  final List<String> uniformTypeIdentifiers;
 }
 
 class SelectedDocument {
@@ -57,6 +59,7 @@ abstract interface class AppPlatformServices {
   CapcPlatformKind get kind;
   String get platformLabel;
   bool get isAndroid;
+  bool get isIOS;
   bool get caseInsensitivePaths;
   bool get supportsDocumentSharing;
   LocalDatabaseDriver get database;

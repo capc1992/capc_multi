@@ -26,6 +26,9 @@ class TestHostPlatformServices implements AppPlatformServices {
   bool get isAndroid => false;
 
   @override
+  bool get isIOS => false;
+
+  @override
   bool get caseInsensitivePaths => Platform.isWindows;
 
   @override

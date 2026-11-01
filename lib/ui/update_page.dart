@@ -82,9 +82,11 @@ class UpdatePage extends StatelessWidget {
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       Icon(
-        controller.platform == UpdatePlatform.windows
-            ? Icons.desktop_windows_outlined
-            : Icons.android_outlined,
+        switch (controller.platform) {
+          UpdatePlatform.windows => Icons.desktop_windows_outlined,
+          UpdatePlatform.android => Icons.android_outlined,
+          UpdatePlatform.ios => Icons.phone_iphone_outlined,
+        },
         size: 40,
         color: Theme.of(context).colorScheme.primary,
       ),
@@ -304,6 +306,13 @@ class UpdatePage extends StatelessWidget {
           onPressed: controller.busy ? null : controller.openStore,
           icon: const Icon(Icons.open_in_new),
           label: const Text('Abrir ficha de Google Play'),
+        ),
+      if (controller.platform == UpdatePlatform.ios)
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 12),
+          child: Text(
+            'Para actualizar en iPhone o iPad, instala la nueva IPA con Sideloadly usando el mismo Apple ID. La base local no se elimina.',
+          ),
         ),
       if (!canInstall && controller.platform == UpdatePlatform.windows)
         const Padding(

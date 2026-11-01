@@ -1415,6 +1415,22 @@ class CapcRepository {
           'Ajusta las existencias a cero antes de eliminar el producto.',
         );
       }
+      if (rows.single['is_service'] == 0) {
+        final recipes = await txn.rawQuery(
+          '''SELECT service.name FROM service_materials recipe
+             JOIN products service ON service.id = recipe.service_id
+             WHERE recipe.product_id = ? AND recipe.business_id = ?
+               AND service.deleted_at IS NULL
+             ORDER BY service.name LIMIT 3''',
+          [id, businessId],
+        );
+        if (recipes.isNotEmpty) {
+          final names = recipes.map((row) => row['name']).join(', ');
+          throw CapcException(
+            'Este producto se usa en servicios activos ($names). Retíralo de sus materiales antes de eliminarlo.',
+          );
+        }
+      }
       final now = _now();
       final revision = (rows.single['revision'] as int) + 1;
       await txn.update(

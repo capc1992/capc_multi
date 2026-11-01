@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../data/repository.dart';
 import '../sync/remote_identity.dart';
 import '../sync/sync_coordinator.dart';
 import '../sync/sync_models.dart';
@@ -11,9 +12,15 @@ class RemoteIdentityPage extends StatefulWidget {
     super.key,
     required this.controller,
     this.syncCoordinator,
+    this.onDeleteBusiness,
   });
   final RemoteIdentityController controller;
   final SyncCoordinator? syncCoordinator;
+  final Future<String> Function({
+    required String email,
+    required String password,
+  })?
+  onDeleteBusiness;
 
   @override
   State<RemoteIdentityPage> createState() => _RemoteIdentityPageState();
@@ -378,24 +385,26 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
         _accessControlCard(),
         const SizedBox(height: 16),
       ],
-      if (widget.controller.session!.userId == null)
+      if (widget.controller.session!.userId == null &&
+          widget.controller.repository.currentUser?.role == UserRole.owner &&
+          widget.controller.repository.currentUser?.central == false)
         _card(
-          title: 'Eliminar cuenta remota',
+          title: 'Eliminar negocio y empezar de cero',
           icon: Icons.delete_forever_outlined,
           children: [
             const Text(
-              'Elimina definitivamente la identidad, los dispositivos y los datos sincronizados del servidor. La base local de este dispositivo se conserva.',
+              'Elimina definitivamente el negocio, el usuario principal, los dispositivos y los datos sincronizados del servidor. Este dispositivo también volverá al alta inicial.',
             ),
             const SizedBox(height: 8),
             const Text(
-              'Antes de continuar, crea un respaldo si necesitas conservar una copia independiente.',
+              'CAPC creará automáticamente un respaldo local antes de borrar. Los otros equipos conservarán su copia local hasta que se reinicien manualmente.',
             ),
             const SizedBox(height: 16),
             Align(
               alignment: Alignment.centerLeft,
               child: Semantics(
                 button: true,
-                label: 'Eliminar definitivamente la cuenta remota',
+                label: 'Eliminar definitivamente el negocio y empezar de cero',
                 child: FilledButton.icon(
                   style: FilledButton.styleFrom(
                     backgroundColor: Theme.of(context).colorScheme.error,
@@ -404,7 +413,7 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
                   ),
                   onPressed: _busy ? null : _confirmDeleteAccount,
                   icon: const Icon(Icons.delete_forever_outlined),
-                  label: const Text('Eliminar cuenta remota'),
+                  label: const Text('Eliminar negocio y empezar de cero'),
                 ),
               ),
             ),
@@ -1115,15 +1124,20 @@ class _RemoteIdentityPageState extends State<RemoteIdentityPage> {
     );
     if (credentials == null) return;
     await _run(() async {
-      await widget.controller.deleteAccount(
-        email: credentials.email,
-        password: credentials.password,
-      );
+      final reset = widget.onDeleteBusiness;
+      if (reset != null) {
+        await reset(email: credentials.email, password: credentials.password);
+      } else {
+        await widget.controller.deleteAccount(
+          email: credentials.email,
+          password: credentials.password,
+        );
+      }
       if (mounted) {
         setState(() {
           _devices = const [];
           _success =
-              'La cuenta remota y sus datos sincronizados fueron eliminados. Los datos locales permanecen en este dispositivo.';
+              'El negocio remoto y sus datos sincronizados fueron eliminados.';
         });
       }
     });
@@ -1194,7 +1208,7 @@ class _DeleteAccountDialogState extends State<_DeleteAccountDialog> {
       color: Theme.of(context).colorScheme.error,
       size: 36,
     ),
-    title: const Text('Eliminar cuenta remota'),
+    title: const Text('Eliminar negocio y empezar de cero'),
     content: SizedBox(
       width: 460,
       child: SingleChildScrollView(
@@ -1205,7 +1219,7 @@ class _DeleteAccountDialogState extends State<_DeleteAccountDialog> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text(
-                'Se borrarán permanentemente la cuenta, sesiones, dispositivos y datos sincronizados del servidor. La base SQLite local permanecerá en este dispositivo.',
+                'Se borrarán permanentemente el negocio, el usuario principal, las sesiones, los dispositivos y los datos sincronizados del servidor. También se reiniciará este dispositivo después de crear un respaldo automático.',
               ),
               const SizedBox(height: 16),
               TextFormField(
@@ -1255,7 +1269,7 @@ class _DeleteAccountDialogState extends State<_DeleteAccountDialog> {
     actions: [
       TextButton(
         onPressed: () => Navigator.pop(context),
-        child: const Text('Conservar cuenta'),
+        child: const Text('Conservar negocio'),
       ),
       FilledButton(
         style: FilledButton.styleFrom(
@@ -1270,7 +1284,7 @@ class _DeleteAccountDialogState extends State<_DeleteAccountDialog> {
             );
           }
         },
-        child: const Text('Eliminar definitivamente'),
+        child: const Text('Eliminar y empezar de cero'),
       ),
     ],
   );

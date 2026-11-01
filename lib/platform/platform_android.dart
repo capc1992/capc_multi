@@ -28,6 +28,9 @@ class AndroidPlatformServices implements AppPlatformServices {
   bool get isAndroid => true;
 
   @override
+  bool get isIOS => false;
+
+  @override
   bool get caseInsensitivePaths => false;
 
   @override

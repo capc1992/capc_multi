@@ -9,6 +9,7 @@ const _pdfDocumentType = DocumentType(
   label: 'Documento PDF',
   extensions: ['pdf'],
   mimeType: 'application/pdf',
+  uniformTypeIdentifiers: ['com.adobe.pdf'],
 );
 
 /// A period is a pair of inclusive civil dates in Bogotá, independent of the

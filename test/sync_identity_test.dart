@@ -677,14 +677,14 @@ void main() {
     );
     await tester.pumpAndSettle();
     await tester.ensureVisible(
-      find.widgetWithText(FilledButton, 'Eliminar cuenta remota'),
+      find.widgetWithText(FilledButton, 'Eliminar negocio y empezar de cero'),
     );
     await tester.pumpAndSettle();
     await tester.tap(
-      find.widgetWithText(FilledButton, 'Eliminar cuenta remota'),
+      find.widgetWithText(FilledButton, 'Eliminar negocio y empezar de cero'),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Eliminar definitivamente'), findsOneWidget);
+    expect(find.text('Eliminar y empezar de cero'), findsOneWidget);
 
     await tester.enterText(
       find.widgetWithText(TextFormField, 'Correo remoto'),
@@ -698,7 +698,7 @@ void main() {
       find.widgetWithText(TextFormField, 'Escribe ELIMINAR para confirmar'),
       'BORRAR',
     );
-    await tester.tap(find.text('Eliminar definitivamente'));
+    await tester.tap(find.text('Eliminar y empezar de cero'));
     await tester.pump();
     expect(find.text('Escribe exactamente ELIMINAR.'), findsOneWidget);
     expect(controller.deleted, isFalse);
@@ -707,7 +707,7 @@ void main() {
       find.widgetWithText(TextFormField, 'Escribe ELIMINAR para confirmar'),
       'ELIMINAR',
     );
-    await tester.tap(find.text('Eliminar definitivamente'));
+    await tester.tap(find.text('Eliminar y empezar de cero'));
     await tester.pumpAndSettle();
     expect(controller.deleted, isTrue);
     expect(

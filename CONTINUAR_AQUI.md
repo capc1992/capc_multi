@@ -1,6 +1,27 @@
 ﻿# Continuidad de CAPC MULTISERVICIO
 
-Actualizado el 28 de septiembre de 2026. Proyecto canónico: `C:\Users\CAPC\capc_multi`.
+Actualizado el 1 de noviembre de 2026. Proyecto canónico: `C:\Users\CAPC\capc_multi`.
+
+## Correcciones destructivas seguras — 1 de noviembre de 2026
+
+Se implementó el botón de eliminar productos/servicios en Inventario. Usa el
+borrado lógico sincronizable existente, exige stock cero, bloquea materiales que
+todavía pertenecen a recetas activas y conserva ventas, movimientos y auditoría.
+
+Configuración contiene ahora una Zona peligrosa exclusiva del propietario:
+`Reiniciar este dispositivo` exige la contraseña local y `REINICIAR`; `Eliminar
+negocio y empezar de cero` exige las credenciales remotas y `ELIMINAR`. Ambos
+flujos crean primero un respaldo automático en `respaldos_reinicio`. El segundo
+borra además el negocio, usuarios y datos sincronizados del servidor. Los otros
+dispositivos conservan su SQLite hasta reiniciarse manualmente.
+
+Verificación: formato limpio, análisis Flutter sin observaciones, 215 pruebas
+Flutter aprobadas, Windows release y Android debug compilados. Paquete piloto
+nuevo, aún no instalado ni ejecutado:
+`dist/CAPC-PILOTO-AISLADO-0.4.1-8-20261101-125810-342.zip`, SHA-256
+`8734CE93EDAF185A0EAFFE5776ACC53A1BADC05BA32A59CC9256DB5AF220B0BA`.
+Los cambios permanecen locales, sin commit ni push, y no se ejecutó ningún
+borrado sobre las bases ni el servidor piloto.
 
 ## Próxima continuación — piloto aislado y VPS
 
