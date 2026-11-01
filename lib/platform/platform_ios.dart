@@ -47,10 +47,8 @@ class IosPlatformServices implements AppPlatformServices {
   Future<Directory> temporaryDirectory() => getTemporaryDirectory();
 
   @override
-  Future<DeviceSummary> deviceSummary() async => const DeviceSummary(
-    platform: 'iOS',
-    description: 'iPhone o iPad',
-  );
+  Future<DeviceSummary> deviceSummary() async =>
+      const DeviceSummary(platform: 'iOS', description: 'iPhone o iPad');
 
   @override
   Future<void> openExternalUri(Uri uri) async {
@@ -96,7 +94,9 @@ class IosPlatformServices implements AppPlatformServices {
     try {
       final result = await SharePlus.instance.share(
         ShareParams(
-          files: [XFile(file.path, mimeType: type.mimeType, name: suggestedName)],
+          files: [
+            XFile(file.path, mimeType: type.mimeType, name: suggestedName),
+          ],
           title: 'Guardar o compartir $suggestedName',
           sharePositionOrigin: const Rect.fromLTWH(1, 1, 1, 1),
         ),

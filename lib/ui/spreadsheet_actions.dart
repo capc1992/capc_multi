@@ -10,9 +10,7 @@ const excelFileType = DocumentType(
   label: 'Libro de Excel',
   extensions: ['xlsx'],
   mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  uniformTypeIdentifiers: [
-    'org.openxmlformats.spreadsheetml.sheet',
-  ],
+  uniformTypeIdentifiers: ['org.openxmlformats.spreadsheetml.sheet'],
 );
 
 Future<List<int>> buildProductTemplate() => compute(_templateBytes, null);
