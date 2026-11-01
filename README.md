@@ -1,6 +1,6 @@
 ﻿# CAPC MULTISERVICIO
 
-Aplicación Flutter en español con operación local SQLite. Windows `0.3.0` es la base estable y Android comparte la misma lógica. El fundamento de sincronización es opcional: sin URL cada dispositivo funciona completamente offline. Esta carpeta es el proyecto canónico; la plantilla anterior está archivada en `migration/flutter-template`.
+Aplicación Flutter en español con operación local SQLite. Windows `0.4.0` incorpora la Etapa 2 de identidad remota y Android comparte la misma lógica. La sincronización es opcional: sin `CAPC_SYNC_URL` cada dispositivo funciona completamente offline. Esta carpeta es el proyecto canónico; la plantilla anterior está archivada en `migration/flutter-template`.
 
 Consulta [CONTINUAR_AQUI.md](CONTINUAR_AQUI.md) para resultados de verificación, [CONTRACT.md](CONTRACT.md) para reglas técnicas y [el plan](docs/plan-desarrollo-capc.md) para alcance y límites.
 
@@ -9,6 +9,8 @@ La arquitectura móvil está en [Android offline](docs/ANDROID.md). El protocolo
 ## Abrir
 
 Para usar el programa compilado, abre `ABRIR_CAPC.cmd`. Consulta [la guía de operación](docs/GUIA-OPERACION.md) y [las instrucciones de respaldo](docs/ABRIR-Y-RESPALDAR.md).
+
+El centro de actualización del programa está documentado en [docs/UPDATES.md](docs/UPDATES.md). Es independiente de `Actualizar datos`: Windows usa un instalador firmado y verificado; Android usa Google Play. Sin internet, la aplicación local continúa funcionando.
 
 Para desarrollar con Flutter desde IntelliJ o terminal, trabaja en `C:\Users\CAPC\capc_multi`:
 

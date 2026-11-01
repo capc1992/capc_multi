@@ -39,15 +39,27 @@ class LocalUser {
     required this.username,
     required this.role,
     this.active = true,
+    this.central = false,
+    this.centralRoleType,
+    this.centralAuthorizationExpiresAt,
+    this.permissionKeys = const {},
   });
   final String id, name, username;
   final UserRole role;
   final bool active;
-  String get roleLabel => switch (role) {
-    UserRole.owner => 'Propietario',
-    UserRole.admin => 'Administrador',
-    UserRole.cashier => 'Cajero',
-  };
+  final bool central;
+  final String? centralRoleType;
+  final DateTime? centralAuthorizationExpiresAt;
+  final Set<String> permissionKeys;
+  String get roleLabel => central
+      ? centralRoleType == 'administrator'
+            ? 'Administrador configurable'
+            : 'Rol operativo configurable'
+      : switch (role) {
+          UserRole.owner => 'Propietario',
+          UserRole.admin => 'Administrador',
+          UserRole.cashier => 'Cajero',
+        };
   bool can(Permission permission) {
     if (!active) return false;
     if (role == UserRole.owner) return true;
@@ -68,6 +80,30 @@ class LocalUser {
       Permission.manageJobs,
     }.contains(permission);
   }
+
+  bool canKey(String permission) =>
+      active && permissionKeys.contains(permission);
+}
+
+class BusinessProfile {
+  const BusinessProfile({
+    required this.id,
+    required this.name,
+    this.phone = '',
+    this.address = '',
+    this.email = '',
+    this.configurationJson = '{}',
+    this.logoBytes,
+    this.logoMime,
+    this.revision = 1,
+    this.updatedAt,
+  });
+
+  final String id, name, phone, address, email, configurationJson;
+  final List<int>? logoBytes;
+  final String? logoMime;
+  final int revision;
+  final DateTime? updatedAt;
 }
 
 class Product {

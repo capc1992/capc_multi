@@ -25,6 +25,7 @@ class BackupTransfer {
     label: 'Respaldo SQLite de CAPC',
     extensions: ['sqlite', 'sqlite3', 'db'],
     mimeType: 'application/vnd.sqlite3',
+    uniformTypeIdentifiers: ['public.data'],
   );
 
   static Future<SavedDocument?> exportBackup(

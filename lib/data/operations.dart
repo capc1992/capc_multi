@@ -18,7 +18,8 @@ const _operationsSchema = <String>[
   '''CREATE TABLE IF NOT EXISTS suppliers (
     id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL,
     name TEXT NOT NULL, phone TEXT NOT NULL, document TEXT NOT NULL,
-    address TEXT NOT NULL, updated_at TEXT NOT NULL)''',
+    address TEXT NOT NULL, updated_at TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0), deleted_at TEXT)''',
   '''CREATE TABLE IF NOT EXISTS purchases (
     id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
     number TEXT NOT NULL UNIQUE, supplier_id TEXT NOT NULL REFERENCES suppliers(id),
@@ -57,7 +58,8 @@ const _operationsSchema = <String>[
     customer_name TEXT NOT NULL, description TEXT NOT NULL, created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('received','inProgress','ready','delivered')),
     responsible TEXT NOT NULL, delivery_at TEXT NOT NULL,
-    quote_id TEXT UNIQUE REFERENCES quotes(id), sale_id TEXT REFERENCES sales(id), actor_id TEXT NOT NULL)''',
+    quote_id TEXT UNIQUE REFERENCES quotes(id), sale_id TEXT REFERENCES sales(id), actor_id TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0))''',
   '''CREATE TABLE IF NOT EXISTS work_advances (
     id TEXT PRIMARY KEY NOT NULL, business_id TEXT NOT NULL, device_id TEXT NOT NULL,
     work_id TEXT NOT NULL REFERENCES work_orders(id), amount INTEGER NOT NULL CHECK(amount>0),
@@ -73,12 +75,12 @@ const _operationsSchema = <String>[
 
 extension CapcOperations on CapcRepository {
   Future<List<Supplier>> listSuppliers({String query = ''}) => _run(() async {
-    await _require(Permission.managePurchases);
+    await _require(Permission.managePurchases, null, 'proveedores.ver');
     final search = CapcRepository._search(query);
     final rows = await _db.query(
       'suppliers',
       where:
-          'business_id = ?${query.trim().isEmpty ? '' : " AND (name LIKE ? ESCAPE '\\' OR document LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\')"}',
+          'business_id = ? AND deleted_at IS NULL${query.trim().isEmpty ? '' : " AND (name LIKE ? ESCAPE '\\' OR document LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\')"}',
       whereArgs: [
         businessId,
         if (query.trim().isNotEmpty) ...[search, search, search],
@@ -101,7 +103,11 @@ extension CapcOperations on CapcRepository {
     final document = _opsOptional(supplier.document, 'El documento', 80);
     final address = _opsOptional(supplier.address, 'La dirección', 500);
     await _db.transaction((txn) async {
-      await _require(Permission.managePurchases, txn);
+      await _require(
+        Permission.managePurchases,
+        txn,
+        supplier.id.trim().isEmpty ? 'proveedores.crear' : 'proveedores.editar',
+      );
       final current = await txn.query(
         'suppliers',
         where: 'id = ?',
@@ -110,7 +116,15 @@ extension CapcOperations on CapcRepository {
       if (current.isNotEmpty && current.single['business_id'] != businessId) {
         throw const CapcException('El proveedor no pertenece a este negocio.');
       }
+      if (current.isNotEmpty && current.single['deleted_at'] != null) {
+        throw const CapcException(
+          'El proveedor fue eliminado y no se puede editar.',
+        );
+      }
       final now = CapcRepository._now();
+      final revision = current.isEmpty
+          ? 1
+          : (current.single['revision'] as int) + 1;
       final record = <String, Object?>{
         'id': id,
         'business_id': businessId,
@@ -119,6 +133,7 @@ extension CapcOperations on CapcRepository {
         'document': document,
         'address': address,
         'updated_at': now,
+        'revision': revision,
       };
       if (current.isEmpty) {
         await txn.insert('suppliers', record);
@@ -127,6 +142,48 @@ extension CapcOperations on CapcRepository {
       }
       await _audit(txn, 'supplier.saved', id, record, now);
       await _enqueue(txn, 'supplier.saved', record, now);
+    });
+  });
+
+  Future<void> deleteSupplier(String supplierId) => _run(() async {
+    final id = CapcRepository._id(supplierId);
+    await _db.transaction((txn) async {
+      final actor = await _require(
+        Permission.managePurchases,
+        txn,
+        'proveedores.eliminar',
+      );
+      final debt = await txn.rawQuery(
+        'SELECT 1 FROM purchases WHERE business_id=? AND supplier_id=? AND paid<total LIMIT 1',
+        [businessId, id],
+      );
+      if (debt.isNotEmpty) {
+        throw const CapcException(
+          'No se puede eliminar un proveedor con saldos pendientes.',
+        );
+      }
+      final rows = await txn.query(
+        'suppliers',
+        where: 'id=? AND business_id=? AND deleted_at IS NULL',
+        whereArgs: [id, businessId],
+      );
+      if (rows.isEmpty) return;
+      final now = CapcRepository._now();
+      final revision = (rows.single['revision'] as int) + 1;
+      await txn.update(
+        'suppliers',
+        {'deleted_at': now, 'revision': revision, 'updated_at': now},
+        where: 'id=? AND business_id=?',
+        whereArgs: [id, businessId],
+      );
+      final payload = {
+        'id': id,
+        'deleted_at': now,
+        'deleted_by': actor.id,
+        'revision': revision,
+      };
+      await _audit(txn, 'supplier.deleted', id, payload, now);
+      await _enqueue(txn, 'supplier.deleted', payload, now);
     });
   });
 
@@ -184,12 +241,16 @@ extension CapcOperations on CapcRepository {
       'dueAt': dueAt?.toUtc().toIso8601String(),
     });
     return _db.transaction((txn) async {
-      final actor = await _require(Permission.managePurchases, txn);
+      final actor = await _require(
+        Permission.managePurchases,
+        txn,
+        'compras.crear',
+      );
       final previous = await _operation(txn, op, 'purchase.create', request);
       if (previous != null) return _getPurchase(txn, previous);
       final suppliers = await txn.query(
         'suppliers',
-        where: 'id = ? AND business_id = ?',
+        where: 'id = ? AND business_id = ? AND deleted_at IS NULL',
         whereArgs: [supplier, businessId],
       );
       if (suppliers.isEmpty) {
@@ -258,7 +319,31 @@ extension CapcOperations on CapcRepository {
       await _enqueue(
         txn,
         'purchase.created',
-        {'purchaseId': id, 'request': jsonDecode(request)},
+        {
+          'purchaseId': id,
+          'request': jsonDecode(request),
+          'purchase': (await txn.query(
+            'purchases',
+            where: 'id = ?',
+            whereArgs: [id],
+          )).single,
+          'purchaseLines': await txn.query(
+            'purchase_lines',
+            where: 'purchase_id = ?',
+            whereArgs: [id],
+            orderBy: 'position',
+          ),
+          'payments': await txn.query(
+            'supplier_payments',
+            where: 'purchase_id = ?',
+            whereArgs: [id],
+          ),
+          'cashMovements': await txn.query(
+            'cash_movements',
+            where: 'reference_id = ? AND created_at = ?',
+            whereArgs: [id, now],
+          ),
+        },
         now,
         operationId: op,
       );
@@ -268,7 +353,7 @@ extension CapcOperations on CapcRepository {
 
   Future<List<Purchase>> listPurchases({String query = ''}) => _run(
     () => _db.transaction((txn) async {
-      await _require(Permission.managePurchases, txn);
+      await _require(Permission.managePurchases, txn, 'compras.ver');
       final search = CapcRepository._search(query);
       final rows = await txn.query(
         'purchases',
@@ -292,7 +377,7 @@ extension CapcOperations on CapcRepository {
     final op = CapcRepository._id(operationId);
     final request = jsonEncode({'businessId': businessId, 'purchaseId': id});
     return _db.transaction((txn) async {
-      await _require(Permission.managePurchases, txn);
+      await _require(Permission.managePurchases, txn, 'compras.recibir');
       final previous = await _operation(txn, op, 'purchase.receive', request);
       if (previous != null) return _getPurchase(txn, previous);
       final purchase = await _getPurchase(txn, id);
@@ -334,7 +419,15 @@ extension CapcOperations on CapcRepository {
         await _enqueue(
           txn,
           'purchase.received',
-          {'purchaseId': id},
+          {
+            'purchaseId': id,
+            'receivedAt': now,
+            'stockMovements': await txn.query(
+              'stock_movements',
+              where: 'reference_id = ?',
+              whereArgs: [id],
+            ),
+          },
           now,
           operationId: op,
         );
@@ -361,7 +454,11 @@ extension CapcOperations on CapcRepository {
       'method': paymentMethod,
     });
     await _db.transaction((txn) async {
-      final actor = await _require(Permission.managePurchases, txn);
+      final actor = await _require(
+        Permission.managePurchases,
+        txn,
+        'compras.abonar',
+      );
       if (await _operation(txn, op, 'supplier.payment', request) != null) {
         return;
       }
@@ -405,6 +502,16 @@ extension CapcOperations on CapcRepository {
           'paymentId': payment,
           'amount': amount,
           'method': paymentMethod,
+          'payment': (await txn.query(
+            'supplier_payments',
+            where: 'id = ?',
+            whereArgs: [payment],
+          )).single,
+          'cashMovement': (await txn.query(
+            'cash_movements',
+            where: 'reference_id = ? AND created_at = ?',
+            whereArgs: [id, now],
+          )).single,
         },
         now,
         operationId: op,
@@ -415,7 +522,7 @@ extension CapcOperations on CapcRepository {
   Future<List<PurchasePayment>> listSupplierPayments({
     String? purchaseId,
   }) => _run(() async {
-    await _require(Permission.managePurchases);
+    await _require(Permission.managePurchases, null, 'compras.ver');
     final rows = await _db.query(
       'supplier_payments',
       where:
@@ -546,7 +653,11 @@ extension CapcOperations on CapcRepository {
       'items': items.map(_opsQuoteInput).toList(),
     });
     return _db.transaction((txn) async {
-      final actor = await _require(Permission.manageQuotes, txn);
+      final actor = await _require(
+        Permission.manageQuotes,
+        txn,
+        'cotizaciones.crear',
+      );
       final previous = await _operation(txn, op, 'quote.create', request);
       if (previous != null) return _getQuote(txn, previous);
       if (validUntil.toUtc().isBefore(DateTime.now().toUtc())) {
@@ -591,6 +702,17 @@ extension CapcOperations on CapcRepository {
           'revision': 1,
           'status': QuoteStatus.draft.name,
           'request': jsonDecode(request),
+          'quote': (await txn.query(
+            'quotes',
+            where: 'id = ?',
+            whereArgs: [id],
+          )).single,
+          'quoteLines': await txn.query(
+            'quote_lines',
+            where: 'quote_id = ?',
+            whereArgs: [id],
+            orderBy: 'position',
+          ),
         },
         now,
         operationId: op,
@@ -612,7 +734,7 @@ extension CapcOperations on CapcRepository {
     final terms = _opsOptional(conditions, 'Las condiciones', 4000);
     _opsValidateQuoteInput(items);
     return _db.transaction((txn) async {
-      await _require(Permission.manageQuotes, txn);
+      await _require(Permission.manageQuotes, txn, 'cotizaciones.editar');
       final quote = await _getQuote(txn, id);
       if (quote.status != QuoteStatus.draft) {
         throw const CapcException(
@@ -674,6 +796,17 @@ extension CapcOperations on CapcRepository {
         'conditions': terms,
         'revision': revision,
         'items': items.map(_opsQuoteInput).toList(),
+        'quote': (await txn.query(
+          'quotes',
+          where: 'id = ?',
+          whereArgs: [id],
+        )).single,
+        'quoteLines': await txn.query(
+          'quote_lines',
+          where: 'quote_id = ?',
+          whereArgs: [id],
+          orderBy: 'position',
+        ),
       }, now);
       return _getQuote(txn, id);
     });
@@ -681,7 +814,7 @@ extension CapcOperations on CapcRepository {
 
   Future<List<Quote>> listQuotes({String query = ''}) => _run(
     () => _db.transaction((txn) async {
-      await _require(Permission.manageQuotes, txn);
+      await _require(Permission.manageQuotes, txn, 'cotizaciones.ver');
       final search = CapcRepository._search(query);
       final rows = await txn.query(
         'quotes',
@@ -703,7 +836,7 @@ extension CapcOperations on CapcRepository {
   ) => _run(() async {
     final id = CapcRepository._id(quoteId);
     await _db.transaction((txn) async {
-      await _require(Permission.manageQuotes, txn);
+      await _require(Permission.manageQuotes, txn, 'cotizaciones.editar');
       final quote = await _getQuote(txn, id);
       if (quote.status == status) return;
       if (status == QuoteStatus.converted || quote.saleId != null) {
@@ -788,6 +921,11 @@ extension CapcOperations on CapcRepository {
         'quoteId': id,
         'status': status.name,
         'revision': revision,
+        'quote': (await txn.query(
+          'quotes',
+          where: 'id = ?',
+          whereArgs: [id],
+        )).single,
       }, now);
     });
   });
@@ -814,7 +952,7 @@ extension CapcOperations on CapcRepository {
       'dueAt': dueAt?.toUtc().toIso8601String(),
     });
     return _db.transaction((txn) async {
-      await _require(Permission.manageQuotes, txn);
+      await _require(Permission.manageQuotes, txn, 'cotizaciones.convertir');
       final previous = await _operation(txn, op, 'quote.convert', request);
       if (previous != null) return _getSale(txn, previous);
       final quote = await _getQuote(txn, id);
@@ -935,6 +1073,11 @@ extension CapcOperations on CapcRepository {
           'prepaid': prepaid,
           'status': QuoteStatus.converted.name,
           'revision': revision,
+          'quote': (await txn.query(
+            'quotes',
+            where: 'id = ?',
+            whereArgs: [id],
+          )).single,
         },
         now,
         operationId: op,
@@ -1004,7 +1147,7 @@ extension CapcOperations on CapcRepository {
           ? null
           : await _getProduct(txn, CapcRepository._id(item.productId!));
       if (product == null || item.unitPrice != product.salePrice) {
-        await _require(Permission.setPrices, txn);
+        await _require(Permission.setPrices, txn, 'precios.editar');
       }
       result.add(
         QuoteLine(
@@ -1071,7 +1214,11 @@ extension CapcOperations on CapcRepository {
       'quoteId': quote,
     });
     return _db.transaction((txn) async {
-      final actor = await _require(Permission.manageJobs, txn);
+      final actor = await _require(
+        Permission.manageJobs,
+        txn,
+        'trabajos.crear',
+      );
       final previous = await _operation(txn, op, 'work.create', request);
       if (previous != null) return _getWork(txn, previous);
       final customerName = await _opsCustomerName(txn, customer);
@@ -1121,6 +1268,7 @@ extension CapcOperations on CapcRepository {
         'quote_id': quote,
         'sale_id': saleId,
         'actor_id': actor.id,
+        'revision': 1,
       });
       await _recordOperation(txn, op, 'work.create', request, id, now);
       await _audit(txn, 'work.created', id, {
@@ -1130,7 +1278,16 @@ extension CapcOperations on CapcRepository {
       await _enqueue(
         txn,
         'work.created',
-        {'workId': id, 'request': jsonDecode(request)},
+        {
+          'workId': id,
+          'request': jsonDecode(request),
+          'work': (await txn.query(
+            'work_orders',
+            where: 'id = ?',
+            whereArgs: [id],
+          )).single,
+          'revision': 1,
+        },
         now,
         operationId: op,
       );
@@ -1140,7 +1297,7 @@ extension CapcOperations on CapcRepository {
 
   Future<List<WorkOrder>> listWorkOrders({String query = ''}) => _run(
     () => _db.transaction((txn) async {
-      await _require(Permission.manageJobs, txn);
+      await _require(Permission.manageJobs, txn, 'trabajos.ver');
       final search = CapcRepository._search(query);
       final rows = await txn.query(
         'work_orders',
@@ -1165,7 +1322,7 @@ extension CapcOperations on CapcRepository {
     final id = CapcRepository._id(workId);
     final person = CapcRepository._text(responsible, 'El responsable', 160);
     await _db.transaction((txn) async {
-      await _require(Permission.manageJobs, txn);
+      await _require(Permission.manageJobs, txn, 'trabajos.editar');
       final work = await _getWork(txn, id);
       if (status.index < work.status.index ||
           status.index > work.status.index + 1) {
@@ -1184,6 +1341,15 @@ extension CapcOperations on CapcRepository {
         'responsible': person,
         'delivery_at': deliveryAt.toUtc().toIso8601String(),
         'updated_at': now,
+        'revision':
+            ((await txn.query(
+                  'work_orders',
+                  columns: ['revision'],
+                  where: 'id = ?',
+                  whereArgs: [id],
+                )).single['revision']
+                as int) +
+            1,
       };
       await txn.update(
         'work_orders',
@@ -1195,7 +1361,15 @@ extension CapcOperations on CapcRepository {
         'previousStatus': work.status.name,
         ...changes,
       }, now);
-      await _enqueue(txn, 'work.updated', {'workId': id, ...changes}, now);
+      await _enqueue(txn, 'work.updated', {
+        'workId': id,
+        ...changes,
+        'work': (await txn.query(
+          'work_orders',
+          where: 'id = ?',
+          whereArgs: [id],
+        )).single,
+      }, now);
     });
   });
 
@@ -1226,8 +1400,8 @@ extension CapcOperations on CapcRepository {
       'received': moneyReceived,
     });
     return _db.transaction((txn) async {
-      await _require(Permission.manageJobs, txn);
-      final actor = await _require(Permission.collect, txn);
+      await _require(Permission.manageJobs, txn, 'trabajos.cobrar');
+      final actor = await _require(Permission.collect, txn, 'trabajos.cobrar');
       final previous = await _operation(txn, op, 'work.advance', request);
       if (previous != null) {
         final rows = await txn.query(
@@ -1294,14 +1468,27 @@ extension CapcOperations on CapcRepository {
         'method': paymentMethod,
         'received': moneyReceived,
       }, now);
-      await _enqueue(txn, 'work.advance', record, now, operationId: op);
+      await _enqueue(
+        txn,
+        'work.advance',
+        {
+          'advance': record,
+          'cashMovement': (await txn.query(
+            'cash_movements',
+            where: 'reference_id = ? AND created_at = ?',
+            whereArgs: [advance, now],
+          )).single,
+        },
+        now,
+        operationId: op,
+      );
       return _advanceFromRow(record);
     });
   });
 
   Future<List<WorkAdvance>> listWorkAdvances({String? workId}) => _run(
     () async {
-      await _require(Permission.manageJobs);
+      await _require(Permission.manageJobs, null, 'trabajos.ver');
       final rows = await _db.query(
         'work_advances',
         where: 'business_id = ?${workId == null ? '' : ' AND work_id = ?'}',
@@ -1326,8 +1513,8 @@ extension CapcOperations on CapcRepository {
       'saleId': sale,
     });
     return _db.transaction((txn) async {
-      await _require(Permission.manageJobs, txn);
-      await _require(Permission.collect, txn);
+      await _require(Permission.manageJobs, txn, 'trabajos.cobrar');
+      await _require(Permission.collect, txn, 'trabajos.cobrar');
       final previous = await _operation(txn, op, 'work.apply', request);
       if (previous != null) return _getSale(txn, previous);
       final work = await _getWork(txn, id);
@@ -1359,7 +1546,17 @@ extension CapcOperations on CapcRepository {
         await _enqueue(
           txn,
           'work.advanceApplied',
-          {'workId': id, 'saleId': sale, 'amount': work.unappliedAdvances},
+          {
+            'workId': id,
+            'saleId': sale,
+            'amount': work.unappliedAdvances,
+            'advanceIds': (await txn.query(
+              'work_advances',
+              columns: ['id'],
+              where: 'work_id = ? AND sale_id = ?',
+              whereArgs: [id, sale],
+            )).map((row) => row['id']).toList(),
+          },
           now,
           operationId: op,
         );
@@ -1429,7 +1626,7 @@ extension CapcOperations on CapcRepository {
   Future<String> _opsCustomerName(DatabaseExecutor txn, String customer) async {
     final rows = await txn.query(
       'customers',
-      where: 'id = ? AND business_id = ?',
+      where: 'id = ? AND business_id = ? AND deleted_at IS NULL',
       whereArgs: [customer, businessId],
     );
     if (rows.isEmpty) {

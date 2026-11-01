@@ -187,7 +187,7 @@ void main() {
         mode: native.OpenMode.readOnly,
       );
       try {
-        expect(migrated.select('PRAGMA user_version').single.values.single, 3);
+        expect(migrated.select('PRAGMA user_version').single.values.single, 8);
         expect(
           migrated
               .select('SELECT retry_count,state FROM outbox')
@@ -220,6 +220,94 @@ void main() {
     expect((await repository.syncStatus()).status, SyncStatus.localOnly);
     await repository.close();
   });
+
+  test('acuse remoto conserva conflictos y deja una revisión durable', () async {
+    final path = p.join(directory.path, 'ack-conflict.sqlite3');
+    final repository = await openOwned(path);
+    await repository.saveProduct(material());
+    final outgoing = await repository.prepareSyncPush();
+    expect(outgoing, hasLength(1));
+    await repository.acknowledgeSyncPush([
+      SyncPushAck(
+        operationId: outgoing.single.operationId,
+        serverCursor: 41,
+        duplicate: false,
+        conflicts: 1,
+      ),
+    ]);
+    expect(await repository.pendingSyncOperations(), 0);
+    final conflicts = await repository.listSyncConflicts();
+    expect(conflicts, hasLength(1));
+    expect(conflicts.single.kind, 'server.conflict');
+    await repository.markSyncConflictReviewed(conflicts.single.id);
+    expect(await repository.listSyncConflicts(), isEmpty);
+    expect(
+      await repository.listSyncConflicts(includeResolved: true),
+      hasLength(1),
+    );
+    await repository.close();
+
+    final db = native.sqlite3.open(path, mode: native.OpenMode.readOnly);
+    try {
+      final outbox = db.select('SELECT state,server_cursor FROM outbox').single;
+      expect(outbox['state'], 'acknowledged');
+      expect(outbox['server_cursor'], 41);
+      final conflict = db
+          .select(
+            "SELECT kind,entity_id,details,resolved_at FROM sync_conflicts WHERE kind='server.conflict'",
+          )
+          .single;
+      expect(conflict['entity_id'], material().id);
+      expect(conflict['resolved_at'], isNotNull);
+      expect(
+        jsonDecode(conflict['details'] as String),
+        containsPair('count', 1),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  test(
+    'errores transitorios esperan y el reintento manual los libera',
+    () async {
+      final repository = await openOwned(
+        p.join(directory.path, 'retryable.sqlite3'),
+      );
+      await repository.saveProduct(material());
+      final outgoing = await repository.prepareSyncPush();
+      await repository.failSyncPush(
+        [outgoing.single.operationId],
+        'Servicio temporalmente no disponible.',
+        code: 'http_503',
+      );
+      expect(await repository.prepareSyncPush(), isEmpty);
+      await repository.retryFailedSyncNow();
+      expect(await repository.prepareSyncPush(), hasLength(1));
+      await repository.close();
+    },
+  );
+
+  test(
+    'errores permanentes no se reenvían automáticamente ni manualmente',
+    () async {
+      final repository = await openOwned(
+        p.join(directory.path, 'permanent.sqlite3'),
+      );
+      await repository.saveProduct(material());
+      final outgoing = await repository.prepareSyncPush();
+      await repository.failSyncPush(
+        [outgoing.single.operationId],
+        'La operación fue rechazada.',
+        retryable: false,
+        code: 'operation_id_conflict',
+      );
+      await repository.retryFailedSyncNow();
+      expect(await repository.prepareSyncPush(), isEmpty);
+      expect(await repository.pendingSyncOperations(), 1);
+      await repository.close();
+    },
+  );
 
   test('transporte conserva exactamente enteros monetarios grandes', () {
     final original = SyncOperation(
@@ -399,5 +487,388 @@ void main() {
     } finally {
       db.close();
     }
+  });
+
+  test(
+    'dos SQLite materializan compras, devoluciones, caja, cotizaciones y trabajos',
+    () async {
+      final sourcePath = p.join(directory.path, 'source-stage2.sqlite3');
+      final targetPath = p.join(directory.path, 'target-stage2.sqlite3');
+      final source = await openOwned(sourcePath);
+      addTearDown(source.close);
+      await source.backupTo(targetPath);
+      final cloned = native.sqlite3.open(targetPath);
+      try {
+        cloned.execute("UPDATE settings SET value=? WHERE key='device_id'", [
+          '66666666-6666-4666-8666-666666666666',
+        ]);
+      } finally {
+        cloned.close();
+      }
+      final target = await openOwned(targetPath);
+      addTearDown(target.close);
+
+      const productId = '55555555-5555-4555-8555-555555555555';
+      const customerId = '77777777-7777-4777-8777-777777777777';
+      const supplierId = '88888888-8888-4888-8888-888888888888';
+      await source.saveProduct(material());
+      await source.saveCustomer(const Customer(id: customerId, name: 'Ana'));
+      await source.saveSupplier(
+        const Supplier(id: supplierId, name: 'Proveedor etapa 2'),
+      );
+      await source.openCash(
+        1000,
+        operationId: '99999999-9999-4999-8999-999999999999',
+      );
+      final purchase = await source.createPurchase(
+        supplierId: supplierId,
+        reference: 'Compra sincronizada',
+        items: const [
+          PurchaseItemInput(productId: productId, quantity: 3, totalCost: 150),
+        ],
+        dueAt: DateTime.utc(2026, 11, 1),
+        operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      );
+      await source.receivePurchase(
+        purchase.id,
+        operationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      );
+      await source.addSupplierPayment(
+        purchase.id,
+        50,
+        'Efectivo',
+        operationId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      );
+      final sale = await source.createSale(
+        items: const [CartLine(productId: productId, quantity: 1)],
+        customerId: customerId,
+        paid: 200,
+        paymentMethod: 'Efectivo',
+        operationId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      );
+      await source.returnSale(
+        sale.id,
+        [SaleReturnItem(saleLineId: sale.lines.single.id, quantity: 1)],
+        reason: 'Devolución sincronizada',
+        operationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      );
+      await source.addExpense(
+        25,
+        'Mensajería',
+        operationId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      );
+      final quote = await source.createQuote(
+        customerId: customerId,
+        description: 'Cotización sincronizada',
+        items: const [
+          QuoteLineInput(
+            productId: productId,
+            description: 'Papel',
+            quantity: 1,
+            unitPrice: 200,
+          ),
+        ],
+        validUntil: DateTime.utc(2026, 12, 1),
+        operationId: '12345678-1234-4234-8234-123456789012',
+      );
+      await source.updateQuoteStatus(quote.id, QuoteStatus.accepted);
+      final work = await source.createWorkOrder(
+        customerId: customerId,
+        description: 'Trabajo sincronizado',
+        responsible: 'Operaria',
+        deliveryAt: DateTime.utc(2026, 11, 15),
+        quoteId: quote.id,
+        operationId: '23456789-1234-4234-8234-123456789012',
+      );
+      await source.addWorkAdvance(
+        work.id,
+        50,
+        'Efectivo',
+        operationId: '34567890-1234-4234-8234-123456789012',
+      );
+
+      final transport = MemoryTransport();
+      final configuration = SyncConfiguration(
+        baseUri: Uri(scheme: 'http', host: 'localhost', port: 3100),
+      );
+      await SyncEngine(
+        repository: source,
+        configuration: configuration,
+        transport: transport,
+      ).runOnce();
+      final received = await SyncEngine(
+        repository: target,
+        configuration: configuration,
+        transport: transport,
+      ).runOnce();
+
+      expect(received.conflicts, 0);
+      expect(await target.listSuppliers(), hasLength(1));
+      final remotePurchase = (await target.listPurchases()).single;
+      expect(remotePurchase.received, isTrue);
+      expect(remotePurchase.paid, 50);
+      expect(await target.listSaleReturns(), hasLength(1));
+      final targetDatabase = native.sqlite3.open(
+        targetPath,
+        mode: native.OpenMode.readOnly,
+      );
+      try {
+        expect(targetDatabase.select('SELECT * FROM expenses'), hasLength(1));
+      } finally {
+        targetDatabase.close();
+      }
+      expect((await target.listQuotes()).single.status, QuoteStatus.accepted);
+      expect(await target.listWorkOrders(), hasLength(1));
+      expect(await target.listWorkAdvances(), hasLength(1));
+      expect((await target.listProducts()).single.stock, 3);
+      expect(await target.listCashMovements(), isNotEmpty);
+
+      await target.close();
+      await source.close();
+    },
+  );
+
+  test(
+    'dos ventas offline con el mismo consecutivo convergen sin perder documentos',
+    () async {
+      final firstPath = p.join(directory.path, 'number-first.sqlite3');
+      final secondPath = p.join(directory.path, 'number-second.sqlite3');
+      final first = await openOwned(firstPath);
+      addTearDown(first.close);
+      await first.saveProduct(
+        const Product(
+          id: '55555555-5555-4555-8555-555555555555',
+          code: 'SERV-001',
+          name: 'Servicio',
+          unit: 'Unidad',
+          isService: true,
+          purchasePrice: 0,
+          salePrice: 100,
+          stock: 0,
+          minimumStock: 0,
+        ),
+      );
+      await first.backupTo(secondPath);
+      final cloned = native.sqlite3.open(secondPath);
+      try {
+        cloned.execute("UPDATE settings SET value=? WHERE key='device_id'", [
+          '66666666-6666-4666-8666-666666666666',
+        ]);
+      } finally {
+        cloned.close();
+      }
+      final second = await openOwned(secondPath);
+      addTearDown(second.close);
+
+      await first.openCash(
+        0,
+        operationId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      );
+      await second.openCash(
+        0,
+        operationId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      );
+
+      final firstSale = await first.createSale(
+        items: const [
+          CartLine(
+            productId: '55555555-5555-4555-8555-555555555555',
+            quantity: 1,
+          ),
+        ],
+        paid: 100,
+        paymentMethod: 'Efectivo',
+        operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      );
+      final secondSale = await second.createSale(
+        items: const [
+          CartLine(
+            productId: '55555555-5555-4555-8555-555555555555',
+            quantity: 1,
+          ),
+        ],
+        paid: 100,
+        paymentMethod: 'Efectivo',
+        operationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      );
+      expect(firstSale.number, secondSale.number);
+      expect(firstSale.id, isNot(secondSale.id));
+
+      final transport = MemoryTransport();
+      final configuration = SyncConfiguration(
+        baseUri: Uri.parse('http://localhost'),
+      );
+      SyncEngine engine(CapcRepository repository) => SyncEngine(
+        repository: repository,
+        configuration: configuration,
+        transport: transport,
+      );
+      await engine(first).runOnce();
+      await engine(second).runOnce();
+      await engine(first).runOnce();
+
+      final firstSales = await first.listSales();
+      final secondSales = await second.listSales();
+      expect(firstSales, hasLength(2));
+      expect(secondSales, hasLength(2));
+      expect(firstSales.map((sale) => sale.id).toSet(), {
+        firstSale.id,
+        secondSale.id,
+      });
+      expect(secondSales.map((sale) => sale.id).toSet(), {
+        firstSale.id,
+        secondSale.id,
+      });
+      expect(firstSales.map((sale) => sale.number).toSet(), hasLength(2));
+      expect(secondSales.map((sale) => sale.number).toSet(), hasLength(2));
+    },
+  );
+
+  test(
+    'venta recibida adelanta el consecutivo antes de crear otra venta local',
+    () async {
+      final source = await openOwned(
+        p.join(directory.path, 'sequence-source.sqlite3'),
+      );
+      final target = await openOwned(
+        p.join(directory.path, 'sequence-target.sqlite3'),
+      );
+      addTearDown(source.close);
+      addTearDown(target.close);
+      await target.adoptRemoteBusinessId(source.businessId);
+      const serviceId = '77777777-7777-4777-8777-777777777777';
+      await source.saveProduct(
+        const Product(
+          id: serviceId,
+          code: 'SYNC-001',
+          name: 'Servicio sincronizado',
+          unit: 'Unidad',
+          isService: true,
+          purchasePrice: 0,
+          salePrice: 2000,
+          stock: 0,
+          minimumStock: 0,
+        ),
+      );
+      final transport = MemoryTransport();
+      final configuration = SyncConfiguration(
+        baseUri: Uri.parse('http://localhost'),
+      );
+      SyncEngine engine(CapcRepository repository) => SyncEngine(
+        repository: repository,
+        configuration: configuration,
+        transport: transport,
+      );
+      await engine(source).runOnce();
+      await engine(target).runOnce();
+      await source.openCash(
+        0,
+        operationId: 'dddddddd-dddd-4ddd-8ddd-ddddddddddde',
+      );
+      final remoteSale = await source.createSale(
+        items: const [CartLine(productId: serviceId, quantity: 1)],
+        paid: 2000,
+        paymentMethod: 'Efectivo',
+        operationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      );
+      expect(remoteSale.number, 'V-000001');
+      await engine(source).runOnce();
+      await engine(target).runOnce();
+
+      final localSale = await target.createSale(
+        items: const [CartLine(productId: serviceId, quantity: 1)],
+        paid: 2000,
+        paymentMethod: 'Efectivo',
+        operationId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      );
+
+      expect(localSale.number, 'V-000002');
+      expect((await target.listSales()).map((sale) => sale.number), {
+        'V-000001',
+        'V-000002',
+      });
+    },
+  );
+
+  test(
+    'configuración del negocio se conserva y llega al segundo equipo',
+    () async {
+      final sourcePath = p.join(directory.path, 'business-source.sqlite3');
+      final targetPath = p.join(directory.path, 'business-target.sqlite3');
+      final source = await openOwned(sourcePath);
+      final target = await openOwned(targetPath);
+      await target.adoptRemoteBusinessId(source.businessId);
+      await source.saveBusinessProfile(
+        BusinessProfile(
+          id: source.businessId,
+          name: 'Papelería Central',
+          phone: '3001234567',
+          address: 'Calle 1',
+          email: 'negocio@example.test',
+        ),
+      );
+      final transport = MemoryTransport();
+      final configuration = SyncConfiguration(
+        baseUri: Uri.parse('http://localhost'),
+      );
+      await SyncEngine(
+        repository: source,
+        configuration: configuration,
+        transport: transport,
+      ).runOnce();
+      await SyncEngine(
+        repository: target,
+        configuration: configuration,
+        transport: transport,
+      ).runOnce();
+      final remote = await target.getBusinessProfile();
+      expect(remote.name, 'Papelería Central');
+      expect(remote.phone, '3001234567');
+      expect(remote.address, 'Calle 1');
+      expect(remote.email, 'negocio@example.test');
+      await target.close();
+      await source.close();
+    },
+  );
+
+  test('tombstones de maestros convergen sin borrar registros', () async {
+    final source = await openOwned(
+      p.join(directory.path, 'delete-source.sqlite3'),
+    );
+    final target = await openOwned(
+      p.join(directory.path, 'delete-target.sqlite3'),
+    );
+    await target.adoptRemoteBusinessId(source.businessId);
+    const productId = '55555555-5555-4555-8555-555555555555';
+    const customerId = '66666666-6666-4666-8666-666666666666';
+    const supplierId = '77777777-7777-4777-8777-777777777777';
+    await source.saveProduct(material(id: productId));
+    await source.saveCustomer(
+      const Customer(id: customerId, name: 'Cliente eliminable'),
+    );
+    await source.saveSupplier(
+      const Supplier(id: supplierId, name: 'Proveedor eliminable'),
+    );
+    final transport = MemoryTransport();
+    final configuration = SyncConfiguration(
+      baseUri: Uri.parse('http://localhost'),
+    );
+    SyncEngine engine(CapcRepository repository) => SyncEngine(
+      repository: repository,
+      configuration: configuration,
+      transport: transport,
+    );
+    await engine(source).runOnce();
+    await engine(target).runOnce();
+    await source.deleteProduct(productId);
+    await source.deleteCustomer(customerId);
+    await source.deleteSupplier(supplierId);
+    await engine(source).runOnce();
+    await engine(target).runOnce();
+    expect(await target.listProducts(), isEmpty);
+    expect(await target.listCustomers(), isEmpty);
+    expect(await target.listSuppliers(), isEmpty);
+    await target.close();
+    await source.close();
   });
 }

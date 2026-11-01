@@ -10,6 +10,7 @@ const _previewPdfType = DocumentType(
   label: 'Documento PDF',
   extensions: ['pdf'],
   mimeType: 'application/pdf',
+  uniformTypeIdentifiers: ['com.adobe.pdf'],
 );
 
 /// A preview never prints as a side effect of opening or rebuilding the view.

@@ -1,6 +1,6 @@
 # Android offline de CAPC MULTISERVICIO
 
-Esta rama adapta la versión Windows `0.3.0+6` para ejecutar la misma lógica local en Android. La base de sincronización es opcional y no está desplegada: sin configuración remota Android continúa completamente local. No se accedió al VPS, no se añadió Firebase ni se publicó en Google Play.
+Esta rama adapta la versión Windows `0.3.0+6` para ejecutar la misma lógica local en Android. La sincronización continúa siendo opcional: sin configuración remota Android trabaja completamente local. La API de producción está desplegada en `https://api.capcmultiservicios.site`; todavía falta generar y publicar una compilación Android firmada que active esa URL. No se añadió Firebase ni se publicó en Google Play.
 
 ## Arquitectura
 
@@ -74,7 +74,20 @@ La compilación de comprobación `flutter build apk --debug --no-pub` fue aproba
 ## Pendiente para etapas posteriores
 
 - probar apertura, persistencia, selector, restauración, compartir e impresión en un dispositivo Android real;
-- definir el identificador definitivo de aplicación, firma, iconos y política de privacidad;
+- definir el identificador definitivo de aplicación, firma e iconos, y desplegar públicamente la política de privacidad ya implementada;
 - completar autenticación remota, almacenamiento seguro de tokens, materializadores y piloto PostgreSQL/VPS;
 - probar sincronización entre equipos antes de mostrar “Sincronizado”;
 - preparar pruebas cerradas y publicación en Play Console solo con autorización posterior.
+
+## Privacidad y eliminación de cuenta
+
+`Configuración > Conexión remota y dispositivos` ofrece la política de privacidad, el recurso web externo y, cuando el propietario remoto está conectado, `Eliminar negocio y empezar de cero`. La eliminación exige correo, contraseña remota y escribir `ELIMINAR`; crea un respaldo local, borra la identidad y los datos sincronizados del servidor, limpia la credencial segura y vuelve al alta inicial en ese dispositivo. Los demás equipos se reinician manualmente.
+
+`Configuración > Zona peligrosa > Reiniciar este dispositivo` exige la contraseña del propietario local y escribir `REINICIAR`. Conserva un respaldo automático y los documentos exportados, pero elimina la base activa y los usuarios locales del dispositivo.
+
+Las URL que deben permanecer públicas y registrarse en Play Console son:
+
+- `https://api.capcmultiservicios.site/privacidad`
+- `https://api.capcmultiservicios.site/eliminar-cuenta`
+
+Ambas URL están públicas mediante HTTPS desde el 28 de septiembre de 2026 y pueden registrarse en Play Console.

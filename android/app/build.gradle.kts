@@ -4,8 +4,21 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val capcKeystorePath = System.getenv("CAPC_ANDROID_KEYSTORE_PATH")
+val capcStorePassword = System.getenv("CAPC_ANDROID_STORE_PASSWORD")
+val capcKeyAlias = System.getenv("CAPC_ANDROID_KEY_ALIAS")
+val capcKeyPassword = System.getenv("CAPC_ANDROID_KEY_PASSWORD")
+val capcHasReleaseSigning = listOf(
+    capcKeystorePath,
+    capcStorePassword,
+    capcKeyAlias,
+    capcKeyPassword,
+).all { !it.isNullOrBlank() }
+val capcAllowDebugReleaseSigning =
+    System.getenv("CAPC_ALLOW_DEBUG_RELEASE_SIGNING")?.equals("true", ignoreCase = true) == true
+
 android {
-    namespace = "com.example.capc_multi"
+    namespace = "site.capcmultiservicios.capc"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -15,8 +28,7 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.capc_multi"
+        applicationId = "site.capcmultiservicios.capc"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -29,11 +41,38 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (capcHasReleaseSigning) {
+            create("capcRelease") {
+                storeFile = file(capcKeystorePath!!)
+                storePassword = capcStorePassword
+                keyAlias = capcKeyAlias
+                keyPassword = capcKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = when {
+                capcHasReleaseSigning -> signingConfigs.getByName("capcRelease")
+                capcAllowDebugReleaseSigning -> signingConfigs.getByName("debug")
+                else -> null
+            }
+        }
+    }
+}
+
+tasks.configureEach {
+    if (name == "bundleRelease" || name == "assembleRelease") {
+        doFirst {
+            if (!capcHasReleaseSigning && !capcAllowDebugReleaseSigning) {
+                throw GradleException(
+                    "Falta la firma Android release. Configura CAPC_ANDROID_KEYSTORE_PATH, " +
+                        "CAPC_ANDROID_STORE_PASSWORD, CAPC_ANDROID_KEY_ALIAS y CAPC_ANDROID_KEY_PASSWORD. " +
+                        "CAPC_ALLOW_DEBUG_RELEASE_SIGNING=true se permite solo en dry_run y nunca para publicar.",
+                )
+            }
         }
     }
 }

@@ -12,11 +12,17 @@ import '../services/documents.dart';
 import '../services/document_preview.dart';
 import '../services/reporting.dart';
 import '../services/spreadsheets.dart';
+import '../sync/remote_identity.dart';
+import '../sync/sync_coordinator.dart';
+import '../sync/sync_models.dart';
+import '../update/update_controller.dart';
 import 'access_gate.dart';
 import 'account_security.dart';
 import 'management_pages.dart';
+import 'remote_identity_page.dart';
 import 'spreadsheet_actions.dart';
 import 'ui_shared.dart';
+import 'update_page.dart';
 
 const _navy = Color(0xFF142638);
 const _green = Color(0xFF087F5B);
@@ -31,12 +37,30 @@ String _date(DateTime value) => DateFormat('dd/MM/yyyy').format(value);
 String _timestamp(DateTime value) =>
     DateFormat('dd/MM/yyyy · HH:mm').format(_bogota(value));
 
+typedef DeleteBusinessCallback =
+    Future<String> Function({required String email, required String password});
+
 class CapcApp extends StatelessWidget {
-  const CapcApp({super.key, required this.repository});
+  const CapcApp({
+    super.key,
+    required this.repository,
+    this.remoteIdentity,
+    this.syncCoordinator,
+    this.updateController,
+    this.onResetLocal,
+    this.onDeleteBusiness,
+  });
   final CapcRepository repository;
+  final RemoteIdentityController? remoteIdentity;
+  final SyncCoordinator? syncCoordinator;
+  final UpdateController? updateController;
+  final Future<String> Function(String password)? onResetLocal;
+  final DeleteBusinessCallback? onDeleteBusiness;
 
   @override
   Widget build(BuildContext context) {
+    final identity =
+        remoteIdentity ?? RemoteIdentityController(repository: repository);
     final scheme = ColorScheme.fromSeed(
       seedColor: _green,
       brightness: Brightness.light,
@@ -114,18 +138,40 @@ class CapcApp extends StatelessWidget {
         dividerTheme: const DividerThemeData(color: _border, space: 24),
       ),
       home: CapcAccessGate(
+        key: ObjectKey(repository),
         repository: repository,
-        builder: (onLogout) =>
-            _CapcHome(repository: repository, onLogout: onLogout),
+        remoteIdentity: identity,
+        builder: (onLogout) => _CapcHome(
+          repository: repository,
+          onLogout: onLogout,
+          remoteIdentity: identity,
+          syncCoordinator: syncCoordinator,
+          updateController: updateController,
+          onResetLocal: onResetLocal,
+          onDeleteBusiness: onDeleteBusiness,
+        ),
       ),
     );
   }
 }
 
 class _CapcHome extends StatefulWidget {
-  const _CapcHome({required this.repository, required this.onLogout});
+  const _CapcHome({
+    required this.repository,
+    required this.onLogout,
+    required this.remoteIdentity,
+    required this.syncCoordinator,
+    required this.updateController,
+    required this.onResetLocal,
+    required this.onDeleteBusiness,
+  });
   final CapcRepository repository;
   final VoidCallback onLogout;
+  final RemoteIdentityController remoteIdentity;
+  final SyncCoordinator? syncCoordinator;
+  final UpdateController? updateController;
+  final Future<String> Function(String password)? onResetLocal;
+  final DeleteBusinessCallback? onDeleteBusiness;
   @override
   State<_CapcHome> createState() => _CapcHomeState();
 }
@@ -149,6 +195,10 @@ class _CapcHomeState extends State<_CapcHome> {
   List<Sale> _sales = [];
   List<Payment> _payments = [];
   List<SaleReturnRecord> _returns = [];
+  BusinessProfile _business = const BusinessProfile(
+    id: '',
+    name: 'CAPC MULTISERVICIO',
+  );
   final Map<String, int> _cart = {};
   final Map<String, int> _prices = {};
   final _saleSearch = TextEditingController();
@@ -178,15 +228,26 @@ class _CapcHomeState extends State<_CapcHome> {
   @override
   void initState() {
     super.initState();
+    widget.remoteIdentity.initialize();
+    widget.syncCoordinator?.addListener(_syncChanged);
     final today = _day(_bogota(DateTime.now()));
     _reportFrom = DateTime(today.year, today.month, 1);
     _reportTo = today;
     _deviceSummary = appPlatform.deviceSummary();
+    if (widget.repository.currentUser?.central == true) {
+      for (var index = 0; index < _navigation.length; index++) {
+        if (_canNavigate(index)) {
+          _page = index;
+          break;
+        }
+      }
+    }
     _refresh();
   }
 
   @override
   void dispose() {
+    widget.syncCoordinator?.removeListener(_syncChanged);
     for (final c in [
       _saleSearch,
       _inventorySearch,
@@ -201,13 +262,32 @@ class _CapcHomeState extends State<_CapcHome> {
     super.dispose();
   }
 
+  void _syncChanged() {
+    if (mounted) setState(() {});
+  }
+
   Future<void> _refresh() async {
     try {
-      final products = await widget.repository.listProducts();
-      final customers = await widget.repository.listCustomers();
-      final sales = await widget.repository.listSales();
-      final payments = await widget.repository.listPayments();
-      final returns = await widget.repository.listSaleReturns();
+      final products = _can('productos.ver')
+          ? await widget.repository.listProducts()
+          : <Product>[];
+      final customers = _can('clientes.ver')
+          ? await widget.repository.listCustomers()
+          : <Customer>[];
+      final sales = _can('ventas.ver')
+          ? await widget.repository.listSales()
+          : <Sale>[];
+      final payments = _can('ventas.ver')
+          ? await widget.repository.listPayments()
+          : <Payment>[];
+      final returns = _can('ventas.ver')
+          ? await widget.repository.listSaleReturns()
+          : <SaleReturnRecord>[];
+      final business = _can('configuracion.ver')
+          ? await widget.repository.getBusinessProfile()
+          : BusinessProfile(id: widget.repository.businessId, name: 'CAPC');
+      CapcDocuments.configureBusiness(business.name);
+      CapcSpreadsheets.configureBusiness(business.name);
       if (!mounted) return;
       setState(() {
         _products = products;
@@ -220,6 +300,7 @@ class _CapcHomeState extends State<_CapcHome> {
         _sales = sales;
         _payments = payments;
         _returns = returns;
+        _business = business;
         _loading = false;
         _loadError = null;
       });
@@ -245,6 +326,7 @@ class _CapcHomeState extends State<_CapcHome> {
 
   Future<void> _refreshAll() async {
     await _refresh();
+    await widget.syncCoordinator?.refreshStatus();
     if (mounted) setState(() => _managementRevision++);
   }
 
@@ -260,6 +342,63 @@ class _CapcHomeState extends State<_CapcHome> {
     }
   }
 
+  Future<void> _syncNow() async {
+    final result = await widget.syncCoordinator?.syncNow();
+    await _refreshAll();
+    if (result != null) {
+      _notify(
+        result.pushed == 0 && result.received == 0
+            ? 'Todo está sincronizado.'
+            : 'Sincronización completa: ${result.pushed} enviados y ${result.applied} aplicados.',
+      );
+    }
+  }
+
+  Widget _syncTag() {
+    final coordinator = widget.syncCoordinator;
+    if (coordinator == null || !coordinator.enabled) {
+      return const _Tag(
+        'Guardado en este dispositivo',
+        icon: Icons.offline_pin_outlined,
+      );
+    }
+    if (!widget.remoteIdentity.connected) {
+      return const _Tag(
+        'Conecta para sincronizar',
+        warning: true,
+        icon: Icons.cloud_off_outlined,
+      );
+    }
+    if (coordinator.running) {
+      return const _Tag('Sincronizando…', icon: Icons.sync);
+    }
+    final snapshot = coordinator.snapshot;
+    if (snapshot == null) {
+      return const _Tag(
+        'Preparando sincronización',
+        warning: true,
+        icon: Icons.cloud_queue_outlined,
+      );
+    }
+    if (snapshot.status == SyncStatus.error) {
+      return _Tag(
+        snapshot.pending == 0
+            ? 'Sin conexión'
+            : '${snapshot.pending} pendientes',
+        warning: true,
+        icon: Icons.cloud_off_outlined,
+      );
+    }
+    if (snapshot.pending > 0) {
+      return _Tag(
+        '${snapshot.pending} pendientes',
+        warning: true,
+        icon: Icons.cloud_upload_outlined,
+      );
+    }
+    return const _Tag('Sincronizado', icon: Icons.cloud_done_outlined);
+  }
+
   Product? _product(String id) {
     for (final p in _products) {
       if (p.id == id) return p;
@@ -267,8 +406,33 @@ class _CapcHomeState extends State<_CapcHome> {
     return null;
   }
 
-  bool get _manager => widget.repository.currentUser?.role != UserRole.cashier;
+  bool _can(String permission) => widget.repository.hasPermission(permission);
+  bool get _manager =>
+      widget.repository.currentUser?.centralRoleType == 'administrator' ||
+      (widget.repository.currentUser?.central != true &&
+          widget.repository.currentUser?.role != UserRole.cashier);
   bool get _owner => widget.repository.currentUser?.role == UserRole.owner;
+  bool _canNavigate(int index) {
+    if (widget.repository.currentUser?.central != true) {
+      return _manager || ![2, 5, 8, 10].contains(index);
+    }
+    return switch (index) {
+      0 => _can('ventas.ver') || _can('inventario.ver'),
+      1 => _can('ventas.crear') && _can('productos.ver'),
+      2 => _can('productos.ver') || _can('inventario.ver'),
+      3 => _can('clientes.ver'),
+      4 => _can('ventas.ver'),
+      5 => _can('reportes.ver'),
+      6 => _can('configuracion.ver'),
+      7 => _can('caja.ver'),
+      8 => _can('compras.ver') || _can('proveedores.ver'),
+      9 => _can('cotizaciones.ver') || _can('trabajos.ver'),
+      10 =>
+        _can('access:read') || _can('auditoria.ver') || _can('conflictos.ver'),
+      _ => false,
+    };
+  }
+
   int get _cartTotal => _cart.entries.fold(
     0,
     (sum, e) =>
@@ -344,9 +508,9 @@ class _CapcHomeState extends State<_CapcHome> {
                                     ).textTheme.headlineMedium,
                                   ),
                                   const SizedBox(height: 4),
-                                  const Text(
-                                    'CAPC MULTISERVICIO',
-                                    style: TextStyle(
+                                  Text(
+                                    _business.name,
+                                    style: const TextStyle(
                                       color: _muted,
                                       fontSize: 12,
                                       letterSpacing: 1.3,
@@ -355,12 +519,43 @@ class _CapcHomeState extends State<_CapcHome> {
                                 ],
                               ),
                             ),
-                            if (constraints.maxWidth > 780)
-                              const _Tag(
-                                'Guardado en este dispositivo',
-                                icon: Icons.offline_pin_outlined,
-                              ),
+                            if (constraints.maxWidth > 780) _syncTag(),
                             const SizedBox(width: 8),
+                            if ((widget.syncCoordinator?.enabled ?? false) &&
+                                _can('sync:read') &&
+                                _can('sync:write'))
+                              IconButton(
+                                tooltip: widget.remoteIdentity.connected
+                                    ? 'Sincronizar ahora'
+                                    : 'Conecta el negocio para sincronizar',
+                                onPressed:
+                                    _busy ||
+                                        _loading ||
+                                        (widget.syncCoordinator?.running ??
+                                            false)
+                                    ? null
+                                    : widget.remoteIdentity.connected
+                                    ? () => _run(_syncNow)
+                                    : () => Navigator.of(context).push(
+                                        MaterialPageRoute<void>(
+                                          builder: (_) => RemoteIdentityPage(
+                                            controller: widget.remoteIdentity,
+                                            syncCoordinator:
+                                                widget.syncCoordinator,
+                                            onDeleteBusiness:
+                                                widget.onDeleteBusiness,
+                                          ),
+                                        ),
+                                      ),
+                                icon: widget.syncCoordinator?.running ?? false
+                                    ? const SizedBox.square(
+                                        dimension: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.cloud_sync_outlined),
+                              ),
                             IconButton(
                               tooltip: 'Actualizar datos',
                               onPressed: _busy || _loading
@@ -368,25 +563,28 @@ class _CapcHomeState extends State<_CapcHome> {
                                   : () => _run(_refreshAll),
                               icon: const Icon(Icons.refresh),
                             ),
-                            IconButton(
-                              tooltip: 'Seguridad de mi cuenta',
-                              onPressed: _busy
-                                  ? null
-                                  : () async {
-                                      await Navigator.of(context).push<void>(
-                                        MaterialPageRoute(
-                                          builder: (_) => AccountSecurityPage(
-                                            repository: widget.repository,
+                            if (widget.repository.currentUser?.central != true)
+                              IconButton(
+                                tooltip: 'Seguridad de mi cuenta',
+                                onPressed: _busy
+                                    ? null
+                                    : () async {
+                                        await Navigator.of(context).push<void>(
+                                          MaterialPageRoute(
+                                            builder: (_) => AccountSecurityPage(
+                                              repository: widget.repository,
+                                            ),
                                           ),
-                                        ),
-                                      );
-                                      if (mounted &&
-                                          !widget.repository.isAuthenticated) {
-                                        widget.onLogout();
-                                      }
-                                    },
-                              icon: const Icon(Icons.key_outlined),
-                            ),
+                                        );
+                                        if (mounted &&
+                                            !widget
+                                                .repository
+                                                .isAuthenticated) {
+                                          widget.onLogout();
+                                        }
+                                      },
+                                icon: const Icon(Icons.key_outlined),
+                              ),
                             IconButton(
                               tooltip: 'Cerrar sesión',
                               onPressed: _busy
@@ -464,8 +662,7 @@ class _CapcHomeState extends State<_CapcHome> {
           child: ListView.builder(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             itemCount: _navigation.length,
-            itemBuilder: (context, index) =>
-                !_manager && [2, 5, 8, 10].contains(index)
+            itemBuilder: (context, index) => !_canNavigate(index)
                 ? const SizedBox.shrink()
                 : ListTile(
                     key: ValueKey('navigation-${_navigation[index].$1}'),
@@ -534,8 +731,7 @@ class _CapcHomeState extends State<_CapcHome> {
             child: ListView.builder(
               padding: const EdgeInsets.symmetric(horizontal: 10),
               itemCount: _navigation.length,
-              itemBuilder: (context, index) =>
-                  !_manager && [2, 5, 8, 10].contains(index)
+              itemBuilder: (context, index) => !_canNavigate(index)
                   ? const SizedBox.shrink()
                   : Padding(
                       padding: const EdgeInsets.only(bottom: 8),
@@ -630,6 +826,18 @@ class _CapcHomeState extends State<_CapcHome> {
       page: _page,
       refreshRevision: _managementRevision,
       onChanged: _refresh,
+      remoteIdentity: widget.remoteIdentity,
+      onOpenCentralAccess: _page == 10
+          ? () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => RemoteIdentityPage(
+                  controller: widget.remoteIdentity,
+                  syncCoordinator: widget.syncCoordinator,
+                  onDeleteBusiness: widget.onDeleteBusiness,
+                ),
+              ),
+            )
+          : null,
     ),
   };
 
@@ -690,28 +898,30 @@ class _CapcHomeState extends State<_CapcHome> {
               spacing: 12,
               runSpacing: 12,
               children: [
-                FilledButton.icon(
-                  onPressed: _busy ? null : () => setState(() => _page = 1),
-                  icon: const Icon(Icons.add_shopping_cart),
-                  label: const Text('Nueva venta'),
-                ),
-                if (_manager)
+                if (_can('ventas.crear') && _can('productos.ver'))
+                  FilledButton.icon(
+                    onPressed: _busy ? null : () => setState(() => _page = 1),
+                    icon: const Icon(Icons.add_shopping_cart),
+                    label: const Text('Nueva venta'),
+                  ),
+                if (_can('productos.crear'))
                   OutlinedButton.icon(
                     onPressed: _busy ? null : () => _editProduct(),
                     icon: const Icon(Icons.add),
                     label: const Text('Registrar producto'),
                   ),
-                if (_manager)
+                if (_can('reportes.ver'))
                   OutlinedButton.icon(
                     onPressed: _busy ? null : () => setState(() => _page = 5),
                     icon: const Icon(Icons.bar_chart_outlined),
                     label: const Text('Ver resultados'),
                   ),
-                OutlinedButton.icon(
-                  onPressed: _busy ? null : () => setState(() => _page = 7),
-                  icon: const Icon(Icons.account_balance_outlined),
-                  label: const Text('Abrir / cerrar caja'),
-                ),
+                if (_can('caja.ver'))
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : () => setState(() => _page = 7),
+                    icon: const Icon(Icons.account_balance_outlined),
+                    label: const Text('Abrir / cerrar caja'),
+                  ),
               ],
             ),
           ],
@@ -946,7 +1156,7 @@ class _CapcHomeState extends State<_CapcHome> {
                             '${_money(_prices[p.id] ?? p.salePrice)} / ${p.unit}',
                             style: const TextStyle(fontSize: 12, color: _muted),
                           ),
-                          if (_manager)
+                          if (_can('precios.editar'))
                             TextButton(
                               onPressed: _busy
                                   ? null
@@ -1070,20 +1280,21 @@ class _CapcHomeState extends State<_CapcHome> {
                           () => _customerId = value == '' ? null : value,
                         ),
                 ),
-                TextButton.icon(
-                  onPressed: _busy
-                      ? null
-                      : () async {
-                          final customerId = await _editCustomer();
-                          if (customerId != null &&
-                              mounted &&
-                              _customers.any((c) => c.id == customerId)) {
-                            _changeSale(() => _customerId = customerId);
-                          }
-                        },
-                  icon: const Icon(Icons.person_add_alt_1_outlined),
-                  label: const Text('Nuevo cliente'),
-                ),
+                if (_can('clientes.crear'))
+                  TextButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () async {
+                            final customerId = await _editCustomer();
+                            if (customerId != null &&
+                                mounted &&
+                                _customers.any((c) => c.id == customerId)) {
+                              _changeSale(() => _customerId = customerId);
+                            }
+                          },
+                    icon: const Icon(Icons.person_add_alt_1_outlined),
+                    label: const Text('Nuevo cliente'),
+                  ),
                 DropdownButtonFormField<String>(
                   initialValue: _paymentMode,
                   isExpanded: true,
@@ -1405,11 +1616,12 @@ class _CapcHomeState extends State<_CapcHome> {
           spacing: 12,
           runSpacing: 12,
           children: [
-            FilledButton.icon(
-              onPressed: _busy ? null : () => _editProduct(),
-              icon: const Icon(Icons.add),
-              label: const Text('Nuevo producto o servicio'),
-            ),
+            if (_can('productos.crear'))
+              FilledButton.icon(
+                onPressed: _busy ? null : () => _editProduct(),
+                icon: const Icon(Icons.add),
+                label: const Text('Nuevo producto o servicio'),
+              ),
             OutlinedButton.icon(
               onPressed: _busy
                   ? null
@@ -1423,23 +1635,24 @@ class _CapcHomeState extends State<_CapcHome> {
               icon: const Icon(Icons.download_outlined),
               label: const Text('Descargar plantilla Excel'),
             ),
-            OutlinedButton.icon(
-              onPressed: _busy
-                  ? null
-                  : () => _run(() async {
-                      final count = await showProductImport(
-                        context,
-                        widget.repository,
-                      );
-                      if (count != null && mounted) {
-                        setState(() => _inventoryPage = 0);
-                        await _refreshAll();
-                        _notify('$count productos y servicios importados.');
-                      }
-                    }),
-              icon: const Icon(Icons.upload_file_outlined),
-              label: const Text('Importar Excel'),
-            ),
+            if (_can('productos.crear'))
+              OutlinedButton.icon(
+                onPressed: _busy
+                    ? null
+                    : () => _run(() async {
+                        final count = await showProductImport(
+                          context,
+                          widget.repository,
+                        );
+                        if (count != null && mounted) {
+                          setState(() => _inventoryPage = 0);
+                          await _refreshAll();
+                          _notify('$count productos y servicios importados.');
+                        }
+                      }),
+                icon: const Icon(Icons.upload_file_outlined),
+                label: const Text('Importar Excel'),
+              ),
             OutlinedButton.icon(
               onPressed: _busy
                   ? null
@@ -1578,28 +1791,46 @@ class _CapcHomeState extends State<_CapcHome> {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          TextButton.icon(
-                            onPressed: _busy ? null : () => _editProduct(p),
-                            icon: const Icon(Icons.edit_outlined),
-                            label: const Text('Editar'),
-                          ),
-                          if (!p.isService)
+                          if (_can('productos.editar'))
+                            TextButton.icon(
+                              onPressed: _busy ? null : () => _editProduct(p),
+                              icon: const Icon(Icons.edit_outlined),
+                              label: const Text('Editar'),
+                            ),
+                          if (!p.isService && _can('inventario.ajustar'))
                             TextButton.icon(
                               onPressed: _busy ? null : () => _adjustStock(p),
                               icon: const Icon(Icons.swap_vert),
                               label: const Text('Entrada / salida de stock'),
                             ),
-                          if (!p.isService)
+                          if (!p.isService && _can('inventario.ver'))
                             TextButton.icon(
                               onPressed: _busy ? null : () => _stockHistory(p),
                               icon: const Icon(Icons.history),
                               label: const Text('Movimientos'),
                             ),
-                          if (p.isService)
+                          if (p.isService && _can('productos.editar'))
                             TextButton.icon(
                               onPressed: _busy ? null : () => _recipe(p),
                               icon: const Icon(Icons.build_outlined),
                               label: const Text('Materiales consumidos'),
+                            ),
+                          if (_can('productos.eliminar'))
+                            TextButton.icon(
+                              style: TextButton.styleFrom(
+                                foregroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.error,
+                              ),
+                              onPressed: _busy
+                                  ? null
+                                  : () => _confirmDeleteProduct(p),
+                              icon: const Icon(Icons.delete_outline),
+                              label: Text(
+                                p.isService
+                                    ? 'Eliminar servicio'
+                                    : 'Eliminar producto',
+                              ),
                             ),
                         ],
                       ),
@@ -1612,6 +1843,24 @@ class _CapcHomeState extends State<_CapcHome> {
         ),
       ],
     );
+  }
+
+  Future<void> _confirmDeleteProduct(Product product) async {
+    final confirmed = await confirmAction(
+      context,
+      'Eliminar ${product.name}',
+      product.isService
+          ? 'Se retirará el servicio ${product.code} del catálogo. Las ventas y la auditoría histórica se conservarán.'
+          : 'Se retirará el producto ${product.code} del inventario. Debe tener existencias en cero y no formar parte de servicios activos. Las ventas y los movimientos históricos se conservarán.',
+      action: 'Eliminar',
+      destructive: true,
+    );
+    if (!confirmed || !mounted) return;
+    await _run(() async {
+      await widget.repository.deleteProduct(product.id);
+      await _refreshAll();
+      _notify('${product.name} fue eliminado del catálogo.');
+    });
   }
 
   Widget _customersPage() {
@@ -1630,11 +1879,12 @@ class _CapcHomeState extends State<_CapcHome> {
           spacing: 12,
           runSpacing: 12,
           children: [
-            FilledButton.icon(
-              onPressed: _busy ? null : () => _editCustomer(),
-              icon: const Icon(Icons.person_add_alt_1_outlined),
-              label: const Text('Nuevo cliente'),
-            ),
+            if (_can('clientes.crear'))
+              FilledButton.icon(
+                onPressed: _busy ? null : () => _editCustomer(),
+                icon: const Icon(Icons.person_add_alt_1_outlined),
+                label: const Text('Nuevo cliente'),
+              ),
             OutlinedButton.icon(
               onPressed: _busy
                   ? null
@@ -1717,13 +1967,14 @@ class _CapcHomeState extends State<_CapcHome> {
                               ],
                             ),
                           ),
-                          IconButton(
-                            tooltip: 'Editar ${customer.name}',
-                            onPressed: _busy
-                                ? null
-                                : () => _editCustomer(customer),
-                            icon: const Icon(Icons.edit_outlined),
-                          ),
+                          if (_can('clientes.editar'))
+                            IconButton(
+                              tooltip: 'Editar ${customer.name}',
+                              onPressed: _busy
+                                  ? null
+                                  : () => _editCustomer(customer),
+                              icon: const Icon(Icons.edit_outlined),
+                            ),
                         ],
                       ),
                       _Tag(
@@ -1783,12 +2034,13 @@ class _CapcHomeState extends State<_CapcHome> {
                                     fontWeight: FontWeight.w700,
                                   ),
                                 ),
-                                OutlinedButton(
-                                  onPressed: _busy
-                                      ? null
-                                      : () => _addPayment(sale),
-                                  child: const Text('Registrar abono'),
-                                ),
+                                if (_can('ventas.editar'))
+                                  OutlinedButton(
+                                    onPressed: _busy
+                                        ? null
+                                        : () => _addPayment(sale),
+                                    child: const Text('Registrar abono'),
+                                  ),
                                 TextButton(
                                   onPressed: _busy
                                       ? null
@@ -2116,7 +2368,37 @@ class _CapcHomeState extends State<_CapcHome> {
       _section(
         'Tu espacio de trabajo',
         children: [
-          const _Detail('Negocio', 'CAPC MULTISERVICIO'),
+          _Detail('Negocio', _business.name),
+          if (_business.phone.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _Detail('Teléfono', _business.phone),
+          ],
+          if (_business.address.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _Detail('Dirección', _business.address),
+          ],
+          if (_business.email.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _Detail('Correo', _business.email),
+          ],
+          if (_can('configuracion.editar')) ...[
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: _busy || !widget.remoteIdentity.connected
+                  ? null
+                  : _editBusiness,
+              icon: const Icon(Icons.edit_outlined),
+              label: const Text('Editar información del negocio'),
+            ),
+            if (!widget.remoteIdentity.connected)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  'Conecta el negocio para modificar su configuración.',
+                  style: TextStyle(color: _muted),
+                ),
+              ),
+          ],
           const SizedBox(height: 16),
           const _Detail(
             'Modalidad',
@@ -2133,23 +2415,69 @@ class _CapcHomeState extends State<_CapcHome> {
             ),
           ),
           const SizedBox(height: 16),
-          const _Notice(
-            'Puedes vender sin internet. Esta versión todavía no comparte datos con otros equipos ni se conecta al VPS.',
+          _Notice(
+            widget.remoteIdentity.enabled
+                ? 'La conexión remota es opcional. Las ventas continúan guardándose localmente aunque no haya internet.'
+                : 'Puedes vender sin internet. Esta compilación no comparte datos con otros equipos ni se conecta al VPS.',
             icon: Icons.offline_pin_outlined,
           ),
+          const SizedBox(height: 16),
+          if (_owner || _can('access:read'))
+            OutlinedButton.icon(
+              onPressed: _busy
+                  ? null
+                  : () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => RemoteIdentityPage(
+                          controller: widget.remoteIdentity,
+                          syncCoordinator: widget.syncCoordinator,
+                          onDeleteBusiness: widget.onDeleteBusiness,
+                        ),
+                      ),
+                    ),
+              icon: const Icon(Icons.cloud_outlined),
+              label: const Text('Conexión remota y dispositivos'),
+            ),
         ],
       ),
       const SizedBox(height: 20),
+      if (widget.updateController != null) ...[
+        _section(
+          'Actualizaciones',
+          children: [
+            const Text(
+              'Comprueba e instala nuevas versiones del programa. Esto es distinto de “Actualizar datos”, que solo recarga la información local de las pantallas.',
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: _busy
+                  ? null
+                  : () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => UpdatePage(
+                          controller: widget.updateController!,
+                          repository: widget.repository,
+                          canInstall: _owner,
+                        ),
+                      ),
+                    ),
+              icon: const Icon(Icons.system_update_alt),
+              label: const Text('Abrir centro de actualizaciones'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 20),
+      ],
       _section(
         'Copia de seguridad',
         children: [
           Text(
-            appPlatform.isAndroid
-                ? 'Exporta una copia mediante el selector de documentos de Android. Conserva varias copias con fecha fuera de la aplicación.'
+            appPlatform.isAndroid || appPlatform.isIOS
+                ? 'Exporta una copia mediante el selector de documentos del dispositivo. Conserva varias copias con fecha fuera de la aplicación.'
                 : 'Guarda una copia de la base de datos en otra carpeta o en una memoria USB. Conserva varias copias con fecha.',
           ),
           const SizedBox(height: 16),
-          if (_manager)
+          if (_can('respaldos.crear'))
             FilledButton.icon(
               onPressed: _busy ? null : _backup,
               icon: const Icon(Icons.save_alt),
@@ -2166,7 +2494,7 @@ class _CapcHomeState extends State<_CapcHome> {
             style: const TextStyle(fontSize: 12),
           ),
           const SizedBox(height: 12),
-          if (_owner) ...[
+          if (_can('respaldos.restaurar')) ...[
             const SizedBox(height: 12),
             OutlinedButton.icon(
               onPressed: _busy ? null : _restore,
@@ -2181,6 +2509,63 @@ class _CapcHomeState extends State<_CapcHome> {
         ],
       ),
       const SizedBox(height: 20),
+      if (_owner && widget.onResetLocal != null) ...[
+        _section(
+          'Zona peligrosa',
+          children: [
+            const Text(
+              'Estas acciones crean primero un respaldo automático. Los PDF, archivos Excel y respaldos anteriores no se eliminan.',
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Theme.of(context).colorScheme.error,
+                side: BorderSide(color: Theme.of(context).colorScheme.error),
+              ),
+              onPressed: _busy ? null : _confirmResetLocal,
+              icon: const Icon(Icons.restart_alt),
+              label: const Text('Reiniciar este dispositivo'),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Borra la base y los usuarios de este equipo. No elimina el negocio remoto ni las copias de otros dispositivos.',
+              style: TextStyle(color: _muted, fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.error,
+                foregroundColor: Theme.of(context).colorScheme.onError,
+              ),
+              onPressed:
+                  _busy ||
+                      !widget.remoteIdentity.connected ||
+                      widget.onDeleteBusiness == null
+                  ? null
+                  : () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => RemoteIdentityPage(
+                          controller: widget.remoteIdentity,
+                          syncCoordinator: widget.syncCoordinator,
+                          onDeleteBusiness: widget.onDeleteBusiness,
+                        ),
+                      ),
+                    ),
+              icon: const Icon(Icons.delete_forever_outlined),
+              label: const Text('Eliminar negocio y empezar de cero'),
+            ),
+            if (!widget.remoteIdentity.connected)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  'Conéctate al negocio remoto para habilitar el borrado total.',
+                  style: TextStyle(color: _muted, fontSize: 12),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 20),
+      ],
       _section(
         'Catálogo de ejemplo',
         children: [
@@ -2188,7 +2573,7 @@ class _CapcHomeState extends State<_CapcHome> {
             'Incluye materiales y servicios para un café internet. Revisa los precios y ajusta las existencias antes de usarlo en tu negocio. No crea ventas ni clientes.',
           ),
           const SizedBox(height: 16),
-          if (_manager)
+          if (_can('productos.crear'))
             OutlinedButton.icon(
               onPressed: _busy || _products.isNotEmpty ? null : _loadExamples,
               icon: const Icon(Icons.inventory_2_outlined),
@@ -2209,14 +2594,14 @@ class _CapcHomeState extends State<_CapcHome> {
         'Impresión',
         children: [
           Text(
-            appPlatform.isAndroid
-                ? 'Abre una venta en Historial para ver, guardar, compartir o imprimir el PDF mediante los diálogos de Android.'
+            appPlatform.isAndroid || appPlatform.isIOS
+                ? 'Abre una venta en Historial para ver, guardar, compartir o imprimir el PDF mediante los diálogos del dispositivo.'
                 : 'Abre una venta en Historial y elige Imprimir tirilla (80 mm), Imprimir carta o Guardar PDF. El diálogo de Windows permite seleccionar tu impresora instalada.',
           ),
           const SizedBox(height: 12),
           Text(
-            appPlatform.isAndroid
-                ? 'Los documentos son comprobantes internos sin validez fiscal. Android no accede directamente a la impresora USB conectada al computador y nunca envía documentos automáticamente.'
+            appPlatform.isAndroid || appPlatform.isIOS
+                ? 'Los documentos son comprobantes internos sin validez fiscal. La aplicación nunca envía documentos automáticamente.'
                 : 'Los documentos son comprobantes internos sin validez fiscal. La compatibilidad de tu impresora USB debe comprobarse con su controlador instalado.',
             style: const TextStyle(color: _muted),
           ),
@@ -2224,6 +2609,64 @@ class _CapcHomeState extends State<_CapcHome> {
       ),
     ],
   );
+
+  Future<void> _confirmResetLocal() async {
+    final password = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _ResetDeviceDialog(),
+    );
+    if (password == null || !mounted) return;
+    await _run(() async {
+      await widget.onResetLocal!(password);
+    });
+  }
+
+  Future<void> _editBusiness() async {
+    if (!widget.remoteIdentity.connected) {
+      _notify(
+        'Conecta el negocio para modificar su configuración.',
+        error: true,
+      );
+      return;
+    }
+    final saved = await entryDialog(
+      context,
+      title: 'Información del negocio',
+      fields: [
+        EntryField('name', 'Nombre', value: _business.name),
+        EntryField(
+          'phone',
+          'Teléfono',
+          value: _business.phone,
+          required: false,
+        ),
+        EntryField(
+          'address',
+          'Dirección',
+          value: _business.address,
+          required: false,
+        ),
+        EntryField('email', 'Correo', value: _business.email, required: false),
+      ],
+      onSave: (values) => widget.repository.saveBusinessProfile(
+        BusinessProfile(
+          id: widget.repository.businessId,
+          name: values['name']!,
+          phone: values['phone']!,
+          address: values['address']!,
+          email: values['email']!,
+          configurationJson: _business.configurationJson,
+          logoBytes: _business.logoBytes,
+          logoMime: _business.logoMime,
+        ),
+      ),
+    );
+    if (saved && mounted) {
+      await _refresh();
+      _notify('Información del negocio guardada en este dispositivo.');
+    }
+  }
 
   Future<void> _backup() => _run(() async {
     final name =
@@ -3171,7 +3614,7 @@ class _CapcHomeState extends State<_CapcHome> {
                             icon: const Icon(Icons.save_alt),
                             label: const Text('Guardar PDF tirilla'),
                           ),
-                          if (_manager && !sale.cancelled)
+                          if (_can('ventas.anular') && !sale.cancelled)
                             OutlinedButton.icon(
                               onPressed: busy
                                   ? null
@@ -3184,7 +3627,7 @@ class _CapcHomeState extends State<_CapcHome> {
                               icon: const Icon(Icons.undo),
                               label: const Text('Devolución'),
                             ),
-                          if (_manager && !sale.cancelled)
+                          if (_can('devoluciones.crear') && !sale.cancelled)
                             OutlinedButton.icon(
                               onPressed: busy
                                   ? null
@@ -3549,6 +3992,97 @@ class _Tag extends StatelessWidget {
         ),
       ],
     ),
+  );
+}
+
+class _ResetDeviceDialog extends StatefulWidget {
+  const _ResetDeviceDialog();
+
+  @override
+  State<_ResetDeviceDialog> createState() => _ResetDeviceDialogState();
+}
+
+class _ResetDeviceDialogState extends State<_ResetDeviceDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _password = TextEditingController();
+  final _confirmation = TextEditingController();
+
+  @override
+  void dispose() {
+    _password.dispose();
+    _confirmation.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    icon: Icon(
+      Icons.warning_amber_rounded,
+      color: Theme.of(context).colorScheme.error,
+      size: 36,
+    ),
+    title: const Text('Reiniciar este dispositivo'),
+    content: SizedBox(
+      width: 460,
+      child: SingleChildScrollView(
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'CAPC creará un respaldo automático y después borrará la base, los usuarios y la conexión remota de este dispositivo. El negocio del servidor y los otros equipos no se eliminarán.',
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _password,
+                obscureText: true,
+                enableSuggestions: false,
+                autocorrect: false,
+                autofillHints: const [AutofillHints.password],
+                decoration: const InputDecoration(
+                  labelText: 'Contraseña del propietario local',
+                ),
+                validator: (value) => value == null || value.isEmpty
+                    ? 'Escribe la contraseña del propietario.'
+                    : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _confirmation,
+                textCapitalization: TextCapitalization.characters,
+                autocorrect: false,
+                decoration: const InputDecoration(
+                  labelText: 'Escribe REINICIAR para confirmar',
+                ),
+                validator: (value) => value?.trim() == 'REINICIAR'
+                    ? null
+                    : 'Escribe exactamente REINICIAR.',
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Conservar datos'),
+      ),
+      FilledButton(
+        style: FilledButton.styleFrom(
+          backgroundColor: Theme.of(context).colorScheme.error,
+          foregroundColor: Theme.of(context).colorScheme.onError,
+        ),
+        onPressed: () {
+          if (_formKey.currentState!.validate()) {
+            Navigator.pop(context, _password.text);
+          }
+        },
+        child: const Text('Crear respaldo y reiniciar'),
+      ),
+    ],
   );
 }
 

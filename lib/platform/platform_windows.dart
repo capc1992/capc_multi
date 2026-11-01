@@ -26,6 +26,9 @@ class WindowsPlatformServices implements AppPlatformServices {
   bool get isAndroid => false;
 
   @override
+  bool get isIOS => false;
+
+  @override
   bool get caseInsensitivePaths => true;
 
   @override
@@ -50,6 +53,19 @@ class WindowsPlatformServices implements AppPlatformServices {
     platform: platformLabel,
     description: Platform.localHostname,
   );
+
+  @override
+  Future<void> openExternalUri(Uri uri) async {
+    if (uri.scheme != 'https') {
+      throw ArgumentError.value(uri, 'uri', 'CAPC solo abre enlaces HTTPS.');
+    }
+    final process = await Process.start('explorer.exe', [
+      uri.toString(),
+    ], mode: ProcessStartMode.detached);
+    if (process.pid <= 0) {
+      throw const FileSystemException('No se pudo abrir el enlace.');
+    }
+  }
 
   @override
   Future<SelectedDocument?> openDocument(DocumentType type) async {

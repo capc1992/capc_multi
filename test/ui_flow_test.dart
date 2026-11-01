@@ -5,6 +5,10 @@ import 'dart:ui' as ui;
 import 'package:capc_multiservicio/data/repository.dart';
 import 'package:capc_multiservicio/platform/platform_android.dart';
 import 'package:capc_multiservicio/platform/platform_services.dart';
+import 'package:capc_multiservicio/sync/remote_identity.dart';
+import 'package:capc_multiservicio/sync/secure_credentials.dart';
+import 'package:capc_multiservicio/sync/sync_coordinator.dart';
+import 'package:capc_multiservicio/sync/sync_transport.dart';
 import 'package:capc_multiservicio/ui/capc_app.dart';
 import 'package:capc_multiservicio/ui/line_editor.dart';
 import 'package:capc_multiservicio/ui/ui_shared.dart';
@@ -104,6 +108,45 @@ Future<CapcRepository> openTestApp(WidgetTester tester, Size size) async {
 
 void main() {
   WidgetController.hitTestWarningShouldBeFatal = true;
+  testWidgets('acceso superior abre conexión remota antes de vincularse', (
+    tester,
+  ) async {
+    final repository = await openTestApp(tester, const Size(1400, 900));
+    final identity = RemoteIdentityController(
+      repository: repository,
+      credentials: MemoryCredentialStore(),
+      configuration: SyncConfiguration(
+        baseUri: Uri.parse('https://api-test.example.test'),
+      ),
+    );
+    final coordinator = SyncCoordinator(
+      repository: repository,
+      identity: identity,
+      retryInterval: const Duration(days: 1),
+    );
+    addTearDown(coordinator.dispose);
+    await tester.pumpWidget(
+      CapcApp(
+        repository: repository,
+        remoteIdentity: identity,
+        syncCoordinator: coordinator,
+      ),
+    );
+    await databaseFrames(tester);
+
+    expect(
+      find.byTooltip('Conecta el negocio para sincronizar'),
+      findsOneWidget,
+    );
+    final connect = find.widgetWithIcon(IconButton, Icons.cloud_sync_outlined);
+    expect(connect, findsOneWidget);
+    expect(tester.widget<IconButton>(connect).onPressed, isNotNull);
+    await tester.tap(connect);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Conectar este negocio'), findsOneWidget);
+  });
+
   testWidgets('Formulario bloquea doble guardado antes de reconstruirse', (
     tester,
   ) async {
@@ -747,7 +790,7 @@ void main() {
       'Configuración',
     );
     expect(
-      find.textContaining('selector de documentos de Android'),
+      find.textContaining('selector de documentos del dispositivo'),
       findsOneWidget,
     );
     expect(find.textContaining('ni se conecta al VPS'), findsOneWidget);
@@ -787,4 +830,95 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  testWidgets('Inventario confirma y elimina un producto con stock cero', (
+    tester,
+  ) async {
+    final repository = await openTestApp(tester, const Size(1200, 900));
+    addTearDown(repository.close);
+    await tester.runAsync(
+      () => repository.saveProduct(
+        const Product(
+          id: 'delete-me',
+          code: 'DEL-001',
+          name: 'Producto eliminable',
+          unit: 'Unidad',
+          isService: false,
+          purchasePrice: 0,
+          salePrice: 100,
+          stock: 0,
+          minimumStock: 0,
+        ),
+      ),
+    );
+    await tester.pumpWidget(CapcApp(repository: repository));
+    await databaseFrames(tester);
+    await navigateTo(tester, 'Inventario');
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Buscar producto, servicio o código'),
+      'DEL-001',
+    );
+    await tester.pumpAndSettle();
+
+    final remove = find.widgetWithText(TextButton, 'Eliminar producto');
+    expect(remove, findsOneWidget);
+    await tester.tap(remove);
+    await tester.pumpAndSettle();
+    expect(find.text('Eliminar Producto eliminable'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Eliminar'));
+    await databaseFrames(tester);
+
+    late List<Product> remaining;
+    await tester.runAsync(() async {
+      remaining = await repository.listProducts(query: 'DEL-001');
+    });
+    expect(remaining, isEmpty);
+    expect(
+      find.text('Producto eliminable fue eliminado del catálogo.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('Zona peligrosa exige contraseña y confirmación escrita', (
+    tester,
+  ) async {
+    final repository = await openTestApp(tester, const Size(1200, 900));
+    addTearDown(repository.close);
+    String? receivedPassword;
+    await tester.pumpWidget(
+      CapcApp(
+        repository: repository,
+        onResetLocal: (password) async {
+          receivedPassword = password;
+          return 'respaldo.sqlite3';
+        },
+      ),
+    );
+    await databaseFrames(tester);
+    await navigateTo(tester, 'Configuración');
+
+    final reset = find.widgetWithText(
+      OutlinedButton,
+      'Reiniciar este dispositivo',
+    );
+    expect(reset, findsOneWidget);
+    await tester.ensureVisible(reset);
+    await tester.tap(reset);
+    await tester.pumpAndSettle();
+    expect(find.text('Escribe REINICIAR para confirmar'), findsOneWidget);
+
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Contraseña del propietario local'),
+      'ClavePrueba2026!',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextFormField, 'Escribe REINICIAR para confirmar'),
+      'REINICIAR',
+    );
+    await tester.tap(
+      find.widgetWithText(FilledButton, 'Crear respaldo y reiniciar'),
+    );
+    await tester.pumpAndSettle();
+    expect(receivedPassword, 'ClavePrueba2026!');
+  });
 }

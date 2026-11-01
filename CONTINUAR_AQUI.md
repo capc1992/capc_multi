@@ -1,6 +1,116 @@
 ﻿# Continuidad de CAPC MULTISERVICIO
 
-Actualizado el 27 de septiembre de 2026. Proyecto canónico: `C:\Users\CAPC\capc_multi`.
+Actualizado el 1 de noviembre de 2026. Proyecto canónico: `C:\Users\CAPC\capc_multi`.
+
+## Correcciones destructivas seguras — 1 de noviembre de 2026
+
+Se implementó el botón de eliminar productos/servicios en Inventario. Usa el
+borrado lógico sincronizable existente, exige stock cero, bloquea materiales que
+todavía pertenecen a recetas activas y conserva ventas, movimientos y auditoría.
+
+Configuración contiene ahora una Zona peligrosa exclusiva del propietario:
+`Reiniciar este dispositivo` exige la contraseña local y `REINICIAR`; `Eliminar
+negocio y empezar de cero` exige las credenciales remotas y `ELIMINAR`. Ambos
+flujos crean primero un respaldo automático en `respaldos_reinicio`. El segundo
+borra además el negocio, usuarios y datos sincronizados del servidor. Los otros
+dispositivos conservan su SQLite hasta reiniciarse manualmente.
+
+Verificación: formato limpio, análisis Flutter sin observaciones, 215 pruebas
+Flutter aprobadas, Windows release y Android debug compilados. Paquete piloto
+nuevo, aún no instalado ni ejecutado:
+`dist/CAPC-PILOTO-AISLADO-0.4.1-8-20261101-125810-342.zip`, SHA-256
+`8734CE93EDAF185A0EAFFE5776ACC53A1BADC05BA32A59CC9256DB5AF220B0BA`.
+Los cambios permanecen locales, sin commit ni push, y no se ejecutó ningún
+borrado sobre las bases ni el servidor piloto.
+
+## Próxima continuación — piloto aislado y VPS
+
+El desarrollo local quedó guardado y publicado en la rama `feature/cross-platform-updates`. Antes de instalar una versión definitiva se debe ejecutar un piloto aislado. No desinstalar las versiones Windows existentes: cerrar CAPC, crear un respaldo y usar otra carpeta mediante `CAPC_DATA_DIR`. No alternar versiones antiguas y nuevas sobre la misma base SQLite. `ABRIR_CAPC.cmd` todavía abre el paquete 0.4.0 y el instalador local 0.4.1 es un candidato anterior sin firma; ninguno debe presentarse como la entrega final multiusuario.
+
+Pasos pendientes, en orden:
+
+1. Confirmar en GitHub Actions que el workflow `Cloud Sync Identity` del commit publicado termina completamente verde.
+2. Crear un entorno piloto separado en el VPS: subdominio como `api-test.capcmultiservicios.site`, puerto interno 3101, base y usuario PostgreSQL exclusivos `capc_sync_pilot`, configuración raíz en `/etc/capc-sync-pilot/capc-sync.env` y proceso PM2 `capc-sync-pilot`.
+3. No ejecutar todavía `deploy/vps/deploy-production.sh`, porque apunta al servicio y Nginx de producción. No usar la base del negocio para el piloto.
+4. Mantener `AUTH_TOKEN_PEPPER` y la contraseña PostgreSQL fuera del repositorio y del chat; el archivo de entorno debe tener modo 0600. Solo Nginx por HTTPS debe quedar público, nunca PostgreSQL ni el puerto 3101.
+5. En el servidor piloto ejecutar `npm ci --include=dev`, `npm run check`, `npm test`, `npm run build` y `npm run migrate` dos veces. Verificar que `schema_migrations` contenga 001–005.
+6. `npm run test:postgres` limpia tablas y solo puede ejecutarse contra una base desechable. GitHub Actions ya prepara una para esta prueba. No ejecutarlo en la base piloto después de comenzar las pruebas ni en producción.
+7. Configurar Nginx y TLS para el subdominio piloto, iniciar el servidor como un proceso PM2 distinto y comprobar tanto `http://127.0.0.1:3101/health` como la ruta HTTPS pública.
+8. Crear un respaldo `pg_dump --format=custom` del piloto y ensayar su restauración en otra base desechable.
+9. Compilar Windows y Android con `--dart-define=CAPC_SYNC_URL=https://api-test.capcmultiservicios.site`. Distribuir la carpeta Windows completa; el EXE solo no funciona. El APK debug es únicamente para dispositivos de prueba.
+10. Usar dos equipos o usuarios Windows diferentes y un Android, todos con datos ficticios. Las credenciales remotas de Windows se guardan en Credential Manager, por lo que dos bases `CAPC_DATA_DIR` bajo el mismo usuario no aíslan esas credenciales.
+11. Crear el negocio en el primer equipo y vincular los demás con códigos temporales; nunca copiar SQLite entre dispositivos.
+12. Ejecutar la matriz de `docs/VALIDACION-OFFLINE-FIRST.md`: conexión/desconexión, cierre antes de sincronizar, respuesta perdida, operaciones concurrentes, mismo registro, mismos consecutivos, soft delete, permisos, cambio de permisos offline, auditoría y conflictos.
+13. Aprobar el piloto únicamente si no se pierden IDs ni eventos, el inventario se explica por movimientos, los negocios quedan aislados y el respaldo se restaura correctamente.
+14. Solo después del piloto: respaldo y restauración ensayada de producción, migraciones 001–005, comprobación `/health`, habilitación gradual por negocio y aplicaciones firmadas. Nunca ejecutar pruebas destructivas ni `migrate:rollback` sobre producción.
+
+Comandos y criterios completos: `server/README.md` y `docs/VALIDACION-OFFLINE-FIRST.md`. El push del código no equivale a despliegue; en esta pausa no se accedió ni modificó el VPS.
+
+## Punto actual — núcleo Offline-First y multiusuario completado localmente
+
+Se completó el siguiente bloque de la migración multiusuario. El ingreso principal permite activar e iniciar sesión con usuarios centrales cuando `CAPC_SYNC_URL` está habilitada. Después del primer ingreso con internet, el dispositivo conserva solamente un verificador Argon2id y una concesión Ed25519 firmada, ligada a negocio, dispositivo, usuario, `security_version`, permisos y vencimiento máximo de 72 horas. No se guarda la contraseña en texto plano. Al vencer la concesión se exige renovar por internet.
+
+El tipo de rol sigue siendo configurable como `administrator` u `operational`. Ser administrador no concede permisos por sí solo: el repositorio verifica la clave granular exacta en cada lectura o escritura y la interfaz filtra navegación y acciones con esas mismas claves. Se añadieron permisos para clientes, proveedores, compras, cotizaciones, trabajos, caja, gastos, devoluciones, precios y respaldos. La administración central acepta `roles.*` y `usuarios.*` de forma individual, además de los permisos globales de compatibilidad del administrador principal.
+
+SQLite avanzó al esquema 8 con `central_auth_cache`; PostgreSQL añade la migración reversible `005_permission_catalog`. La concesión firmada incorpora nombre, usuario y tipo de rol. El administrador principal del sistema continúa protegido y recibe el catálogo completo; los roles administradores personalizados reciben únicamente los permisos seleccionados.
+
+Se completaron además la renovación automática de autorización central, la auditoría central combinada de seguridad y operaciones, la bandeja durable de conflictos con permisos `conflictos.ver`/`conflictos.resolver`, los controles granulares de interfaz y la protección contra colisiones de consecutivos creados offline. Marcar un conflicto como revisado conserva toda su evidencia; los hechos financieros se corrigen mediante operaciones compensatorias.
+
+Verificación de este bloque: formato y `flutter analyze --no-pub` limpios; **206 pruebas Flutter** aprobadas; 6 pruebas Python aprobadas; typecheck y build TypeScript correctos; **26 pruebas del servidor** aprobadas y 8 pruebas PostgreSQL preparadas pero omitidas localmente por falta de `DATABASE_URL`. Compilaron correctamente Windows release y Android debug. La matriz está en `docs/VALIDACION-OFFLINE-FIRST.md`. No se ejecutaron las migraciones 004/005 contra PostgreSQL real, no se realizó el piloto físico y no se desplegó el servidor.
+
+## Punto de pausa — stock y Centro de actualizaciones (28 de septiembre)
+
+El usuario pidió guardar el proyecto y continuar después. No continuar con despliegues ni instalaciones durante esta pausa. Los cambios están guardados localmente, sin commit ni push realizados por el agente en este tramo.
+
+**Solicitud pendiente:** corregir que el segundo dispositivo recibe el catálogo pero muestra stock cero, y entregar la corrección mediante **Abrir Centro de actualizaciones**. La corrección local está preparada; la entrega por ese botón aún está bloqueada.
+
+**Estado comprobado con el usuario:** creación de empresa en el VPS respondió HTTP 201; el usuario confirmó posteriormente la eliminación de prueba. El primer equipo mostró conexión remota y sincronización. El segundo recibió artículos, pero no sus existencias iniciales. No confundir estos reportes con una verificación completa del inventario en producción.
+
+**Corrección anterior incluida:** `RemoteIdentityController` enviaba `Content-Type: application/json` sin cuerpo al generar código temporal y cerrar sesión; Fastify rechazaba la petición. Ahora solo se declara JSON cuando hay cuerpo, y los errores de acciones remotas aparecen también en un aviso visible. Se generó el instalador 0.4.0+7 corregido. Pruebas de ese tramo: 9 Flutter y 13 del servidor, análisis y compilación correctos.
+
+**Corrección de stock, versión 0.4.1+8:** `lib/data/repository.dart` encola cada movimiento de tipo `Inicial` como `stock.adjusted` con su ID original. `lib/sync/local_sync_store.dart` recupera, antes del envío, las entradas iniciales de ese dispositivo que versiones anteriores no encolaron. Reconstruye cantidad y valor desde movimientos cuando llega una entrada inicial atrasada, teniendo en cuenta salidas que quedaron en conflicto; resuelve únicamente los saldos consistentes. También repara un receptor actualizado después de recibir la entrada con una versión anterior. No se cambió el esquema SQLite ni el protocolo del servidor. No se tocaron las bases reales.
+
+**Verificación más reciente:** 39 pruebas aprobadas de `sync_initial_stock_test.dart`, `sync_foundation_test.dart`, `core_ledger_test.dart`, `update_test.dart` y `update_page_test.dart`; `flutter analyze --no-pub` sin observaciones; Windows release compilado. Las pruebas nuevas cubren stock/costo, recuperación de datos omitidos, reintentos, salidas anteriores, receptor actualizado tarde, importación, ejemplos, paginación y servicios sin stock. No se ejecutó PostgreSQL real localmente.
+
+**Artefactos locales, NO publicados:** `dist/CAPC-MULTISERVICIO-Setup-0.4.1.exe` (16.395.223 bytes, SHA-256 `42C248C6870740EDB1273B514765BEB7EFDE6E9D2095744A825ED4022DF7301B`, sin firma) y `dist/latest-stock-0.4.1.draft.json` (formato validado). La compilación contiene la URL de sincronización y canal estable, pero no editor de firma. Es un candidato local, no una actualización instalable desde el botón. No indicar al usuario que la corrección ya está instalada.
+
+**Bloqueo del Centro de actualizaciones:** la comprobación pública del dominio `updates.capcmultiservicios.site` falló por DNS. Además, el cliente 0.4.0+7 instalado se compiló sin `CAPC_WINDOWS_UPDATE_PUBLISHER`; ese valor no se puede introducir mediante `latest.json` ni una variable del sistema. El verificador rechaza cualquier actualización con editor vacío. Se conservan las comprobaciones de firma, HTTPS, dominio, tamaño y SHA-256. Se necesita configurar DNS/HTTPS, disponer de firma confiable y hacer una instalación inicial del cliente con el editor configurado. La última pregunta al usuario fue si acepta esa instalación inicial para habilitar las siguientes desde el Centro; **no respondió con autorización: pidió pausar**.
+
+**Al retomar:** explicar brevemente ese bloqueo y resolver el método de habilitación antes de publicar o instalar. El usuario opera el VPS manualmente; mantener la restricción de no acceder por SSH. El workflow de publicación ahora conserva `CAPC_SYNC_URL` en Windows y Android; exige una versión superior a `pubspec.yaml` y publica ambas plataformas. Consultar `docs/ACTUALIZACION-STOCK-0.4.1.md` para los pasos de firma/publicación y validación en equipos. No publicar el manifiesto borrador: hay que recompilar con editor, firmar y regenerar tamaño/hash. No compensar el stock omitido con ajustes manuales en el segundo equipo.
+
+Para la prueba del segundo equipo se indicó `CAPC_DATA_DIR` con un directorio de prueba separado. El acceso directo normal puede abrir su base anterior; no borrar bases ni restablecer usuarios para cambiar de perfil. El usuario creó credenciales locales, pero las olvidó durante la prueba. No hay contraseña predeterminada ni credenciales de usuario guardadas en esta continuidad.
+
+## Actualizaciones multiplataforma — `feature/cross-platform-updates`
+
+Rama creada desde `origin/feature/cloud-sync-identity`, sin fusionar `master`. Se añadió `lib/update/` y `Configuración > Actualizaciones`: versión real del paquete, canales, consulta diferida cada 24 horas, estados offline/error, descarga segura de Windows y Google Play In-App Updates en Android. El botón existente `Actualizar datos` sigue siendo solo una recarga de datos.
+
+Se implementó el cumplimiento técnico de eliminación de cuenta para Google Play: botón propietario con contraseña y confirmación `ELIMINAR`, limpieza de credenciales seguras, endpoint público limitado por intentos, borrado transaccional de identidad y datos sincronizados, y páginas HTML `/privacidad` y `/eliminar-cuenta`. SQLite local se conserva explícitamente. El contacto de privacidad confirmado es `nicolasperdomoliz@gmail.com`.
+
+Producción quedó desplegada el 28 de septiembre de 2026 en `https://api.capcmultiservicios.site`: PostgreSQL 18, API bajo PM2 como `capc-sync`, Nginx, certificado Let's Encrypt con renovación automática y respaldo PostgreSQL diario con retención local de 14 días. `/health`, `/privacidad` y `/eliminar-cuenta` respondieron HTTP 200 desde Internet; dependencias de ejecución auditadas con 0 vulnerabilidades. El despliegue reproducible está en `deploy/vps/deploy-production.sh`. El usuario opera el VPS manualmente; no acceder por SSH desde Codex.
+
+Verificación local de eliminación: formato y análisis Dart sin observaciones; 187 pruebas Flutter, 6 Python y 8 unitarias del servidor aprobadas; typecheck/build TypeScript correctos; APK debug y Windows release compilados. Las 7 pruebas PostgreSQL permanecen omitidas localmente por ausencia de PostgreSQL y se ejecutarán en GitHub Actions al enviar esta rama.
+
+El workflow `Cloud Sync Identity` ahora valida también esta rama para ejecutar las pruebas de eliminación contra PostgreSQL 16 real además de Android y Windows.
+
+Windows exige HTTPS y dominio CAPC, valida redirecciones, tamaño, SHA-256, Authenticode y editor; respalda SQLite antes de abrir Inno. El AppId `{9A6B92F7-CB1F-49B3-9D91-7358AE30A3A8}` está auditado. El instalador actual no tiene certificado comercial, por lo que la instalación automática de producción permanece bloqueada hasta configurar firma y editor esperado.
+
+El workflow manual `Publicar versión CAPC` tiene `dry_run=true` por defecto y prepara Windows, `latest.json` y Android AAB. No despliega sincronización ni ejecuta migraciones. Android usa el identificador definitivo `site.capcmultiservicios.capc`; la publicación real sigue bloqueada hasta configurar Play App Signing antes de la primera publicación. Secretos y operación: `docs/UPDATES.md`. Nginx preparado pero no aplicado: `deploy/nginx/updates.capcmultiservicios.site.conf`. No se accedió al VPS ni a bases reales.
+
+Verificación local de esta rama: formato y análisis sin observaciones; 186 pruebas Flutter, 6 pruebas unitarias Python y 6 pruebas unitarias del servidor aprobadas; typecheck/build del servidor correctos; auditoría npm de producción con 0 vulnerabilidades. Windows release e instalador `dist/CAPC-MULTISERVICIO-Setup-0.4.0.exe` correctos; el manifiesto generado fue validado. El AAB release de comprobación se creó con firma debug autorizada solo para `dry_run`, por lo que no es publicable. La ejecución en PostgreSQL real continúa cubierta por el workflow de identidad y no se volvió a ejecutar localmente.
+
+## Etapa 2 en curso — `feature/cloud-sync-identity`
+
+Rama creada limpia desde `origin/feature/cloud-sync-foundation` (`6559b7a`), que contiene el commit obligatorio `858dedbc31367074408ebe623027b3381e0b97d5`. No se fusionó `master`, no se accedió al VPS y no se abrió ni modificó la base real.
+
+Implementado: identidad remota por negocio/propietario/dispositivo; sesiones y renovaciones rotatorias hasheadas; códigos de vinculación temporales de un solo uso; límites de intentos; listado/revocación/cierre remoto; almacenamiento Flutter en Keystore/Credential Manager; protección contra mezcla de negocios; SQLite esquema 4; materializadores completos de Etapa 2; migraciones PostgreSQL con reversa; OpenAPI y workflow PostgreSQL 16.
+
+La app sigue 100 % offline sin `CAPC_SYNC_URL`. `https://api.capcmultiservicios.site` solo está preparada como referencia y no se activa en compilaciones normales. El paquete Windows es portable: se distribuye el ZIP completo y puede extraerse en dos o más equipos; cada equipo conserva su SQLite y credencial segura privada.
+
+El proyecto Inno Setup reproducible está en `installer/capc_multiservicio.iss` y `tools/build-windows-installer.ps1`. Genera un instalador por usuario con accesos directos y desinstalador, sin empaquetar ni borrar la base real. El workflow de Windows publica tanto el ZIP portable como el instalador `.exe`.
+
+Instalador local verificado: `dist/CAPC-MULTISERVICIO-Setup-0.4.0.exe` (16.288.880 bytes), SHA-256 `207054A6E77D55F71738BE9AF545D3D54D690145B29EAF07F3B7C39D531A59C7`. La prueba silenciosa instaló 31 archivos en `tmp`, confirmó que no había bases `.db/.sqlite/.sqlite3`, encontró `flutter_secure_storage_windows_plugin.dll` y completó la desinstalación con código 0. El ejecutable todavía no tiene una firma comercial, por lo que Windows puede mostrar SmartScreen; no se creó ni usó un certificado improvisado.
+
+Validación local final: formato estable; análisis Flutter sin observaciones; **170 pruebas Flutter**, 2 pruebas Python y 6 pruebas unitarias del servidor aprobadas; typecheck y build TypeScript correctos; auditoría npm de producción con 0 vulnerabilidades; APK debug y Windows release compilados. Las 6 pruebas PostgreSQL se omiten localmente porque este computador no tiene PostgreSQL. El paquete definitivo es `dist/CAPC-MULTISERVICIO-0.4.0-20260927-154149-290.zip`, SHA-256 `23DFF81F7AD021B5B49EE645ABAE6CA74A8C13A236A426789CC9497E53DB9CE9`, e incluye `flutter_secure_storage_windows_plugin.dll`. No declarar aprobada la integración hasta que GitHub Actions ejecute `Cloud Sync Identity` con PostgreSQL 16 y termine verde; después deben registrarse aquí commit y ejecución.
 
 ## Alcance y autorización vigentes
 
@@ -16,7 +126,7 @@ No instalar Microsoft Build Tools: la autorización anterior fue retirada. El eq
 
 ## Código disponible
 
-- Versión del proyecto: `0.3.0+6`; esquema SQLite 3 con migraciones conservadoras v1→v2→v3.
+- Versión del proyecto: `0.4.0+7`; esquema SQLite 4 con migraciones conservadoras v1→v2→v3→v4.
 - Usuarios locales propietario/administrador/cajero, contraseñas Argon2id, permisos en repositorio y revocación de sesión.
 - Recuperación offline con código aleatorio de 256 bits, hash SHA-256, uso único, rotación y límite de intentos. «Olvidé mi contraseña» en ingreso y «Seguridad de mi cuenta» para generar/guardar código tras verificar contraseña actual. Alta/reconfiguración propietaria muestran el código al terminar.
 - Materiales, servicios y recetas, inventario con movimientos, costo promedio y sugerencia de precio optativa.

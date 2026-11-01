@@ -28,6 +28,9 @@ class AndroidPlatformServices implements AppPlatformServices {
   bool get isAndroid => true;
 
   @override
+  bool get isIOS => false;
+
+  @override
   bool get caseInsensitivePaths => false;
 
   @override
@@ -65,6 +68,16 @@ class AndroidPlatformServices implements AppPlatformServices {
         description: 'Dispositivo Android',
       );
     }
+  }
+
+  @override
+  Future<void> openExternalUri(Uri uri) async {
+    if (uri.scheme != 'https') {
+      throw ArgumentError.value(uri, 'uri', 'CAPC solo abre enlaces HTTPS.');
+    }
+    await _channel.invokeMethod<void>('openExternalUrl', {
+      'url': uri.toString(),
+    });
   }
 
   @override

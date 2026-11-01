@@ -1,0 +1,13 @@
+BEGIN;
+
+DROP TABLE IF EXISTS business_assets;
+ALTER TABLE businesses
+  DROP COLUMN IF EXISTS updated_by,
+  DROP COLUMN IF EXISTS updated_at,
+  DROP COLUMN IF EXISTS version,
+  DROP COLUMN IF EXISTS configuration,
+  DROP COLUMN IF EXISTS email,
+  DROP COLUMN IF EXISTS address,
+  DROP COLUMN IF EXISTS phone;
+
+COMMIT;

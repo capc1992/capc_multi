@@ -624,4 +624,49 @@ void main() {
       }
     },
   );
+  test(
+    'eliminar producto exige stock cero y conserva la venta histórica',
+    () async {
+      await repository.saveProduct(product(stock: 1));
+      await sell(operationId: 'sale-before-delete');
+      await repository.deleteProduct('paper');
+
+      expect(await repository.listProducts(), isEmpty);
+      expect((await repository.listSales()).single.number, 'V-000001');
+      expect(
+        (await repository.listStockMovements(productId: 'paper')).length,
+        2,
+      );
+    },
+  );
+
+  test('eliminar material usado por un servicio activo es rechazado', () async {
+    await repository.saveProduct(product(stock: 0));
+    await repository.saveProduct(
+      product(
+        id: 'print',
+        code: 'SER-001',
+        name: 'Impresión',
+        stock: 0,
+        service: true,
+      ),
+    );
+    await repository.setServiceRecipe('print', const [
+      ServiceMaterial(productId: 'paper', quantity: 1),
+    ]);
+
+    await expectLater(
+      repository.deleteProduct('paper'),
+      throwsA(
+        isA<CapcException>().having(
+          (error) => error.message,
+          'message',
+          contains('servicios activos'),
+        ),
+      ),
+    );
+    await repository.setServiceRecipe('print', const []);
+    await repository.deleteProduct('paper');
+    expect((await repository.listProducts()).single.id, 'print');
+  });
 }

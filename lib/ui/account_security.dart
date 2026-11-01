@@ -10,6 +10,7 @@ const _recoveryTextType = DocumentType(
   label: 'Archivo de texto',
   extensions: ['txt'],
   mimeType: 'text/plain',
+  uniformTypeIdentifiers: ['public.plain-text'],
 );
 
 class AccountSecurityPage extends StatefulWidget {
